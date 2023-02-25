@@ -25,7 +25,7 @@
 ```opencl
 // OpenCL code
 #include "metal_stdlib"
-// cannot replicate "using namespace metal;" unfortunately - OpenCL C is not C++
+// unfortunately cannot replicate "using namespace metal;" - OpenCL C is not C++
 
 __kernel void vector_add(__global const int *A, __global const int *B, __global int *C) {
   
