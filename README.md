@@ -1,9 +1,9 @@
 # OpenCL Metal Stdlib
 
 (Very tentative) We may be able to access SIMD-group reductions through OpenCL kernels. If this turns out true, I will personally ensure OpenCL reaches fully parity with Metal, allowing us to bypass Apple's restriction on OpenCL. This would mean we can utilize `simdgroup_matrix` from OpenCL too, reaching 80% ALU utilization in matmul -> AI/ML. All of this will be made possible by one C header, which you insert into OpenCL kernel code.
-- TODO: Outline how OpenCL driver has better scheduling overhead than naive Metal code.
-- TODO: Explain why Open SYCL is still the future, but OpenCL is a good near-term stopgap.
+<!--
 - TODO: Integrate this into VkFFT, tinygrad, DLPrimitives.
+-->
 
 ### Why you don't need Metal
 
@@ -11,6 +11,7 @@
 - OpenCL does not support `half` precision. That's fine, because the M1 GPU architecture doesn't either.
 - OpenCL doesn't allow access to the `MTLCommandBuffer`. That's fine, because it internally bunches up `clEnqueueXXX` calls into command buffers. And probably more optimally than you will.
 - OpenCL is especially fast at AI/ML applications that [dispatch several small operations](https://github.com/philipturner/metal-experiment-1). It should have much better sequential throughput than PyTorch.
+- [SYCL](https://registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html#introduction) will hopefully have a backend for Metal in the future. That means you can use another standardized Khronos API soon. If you're planning to invest time and money migrating OpenCL applications to Metal, the port may become obsolete soon. Note that this is speculative, and not professional advice.
 
 ### What you need to watch out for
 
