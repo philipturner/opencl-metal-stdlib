@@ -15,6 +15,7 @@
 
 ### What you need to watch out for
 
+- OpenCL does not run on iOS. But SYCL will.
 - OpenCL events will infect any commands in their vicinity. After making any `clEnqueueXXX` call that signals a `cl_event`, flush the queue. Do the same immediately before waiting on any `cl_event`.
 - OpenCL profiling is buggy. It reports time spans as 3/125 times their actual value, because it treats `mach_timebase` ticks like nanoseconds.
 - OpenCL seems to not support pre-compiled binary functions - I could not get it to work. Use Metal if startup overhead is mission critical (e.g. real-time rendering). Note that Apple's JIT shader compiler harnesses the system Metal Shader Cache, and is quite fast.
