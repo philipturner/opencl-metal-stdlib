@@ -5,6 +5,20 @@
 - TODO: Explain why Open SYCL is still the future, but OpenCL is a good near-term stopgap.
 - TODO: Integrate this into VkFFT, tinygrad, DLPrimitives.
 
+### Why you don't need Metal
+
+- OpenCL only permits 256 threads/threadgroup instead of 1024. That's fine, because anything above 256 threads seriously deterioriates performance.
+- OpenCL does not support `half` precision. That's fine, because the M1 GPU architecture doesn't either.
+- OpenCL doesn't allow access to the `MTLCommandBuffer`. That's fine, because it internally bunches up `clEnqueueXXX` calls into command buffers. And probably more optimally than you will.
+- OpenCL is especially fast at AI/ML applications that [dispatch several small operations](https://github.com/philipturner/metal-experiment-1). It should have much better sequential throughput than PyTorch.
+
+### What you need to watch out for
+
+- OpenCL events will infect any commands in their vicinity. After making any `clEnqueueXXX` call that signals a `cl_event`, flush the queue. Do the same immediately before waiting on any `cl_event`.
+- OpenCL profiling is buggy. It reports time spans as 3/125 times their actual value, because it treats `mach_timebase` ticks like nanoseconds.
+- OpenCL seems to not support pre-compiled binary functions - I could not get it to work. Use Metal if startup overhead is a big concern, otherwise OpenCL JIT compiles everything just fine.
+- OpenCL commands probably cannot be captured in Metal Frame Capture. I'm not 100% sure; I just tested OpenMM which is a massive code base. You can still test execution time of each kernel. Just use the OpenCL kernel profiling API. For lower-level profiling within the kernel, read [metal-benchmarks](https://github.com/philipturner/metal-benchmarks), use your best judgment, and use trial and error.
+
 ## Usage
 
 ```opencl
