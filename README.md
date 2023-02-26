@@ -1,6 +1,8 @@
 # OpenCL Metal Stdlib
 
-> Note: This is a work in progress, please don't use the header in production code yet.
+> Note: This is a work in progress; please don't use the header in production code yet.
+>
+> TODO: Rewrite the intro for this repository, it seems almost certainly viable now.
 
 (Very tentative) We may be able to access SIMD-group reductions through OpenCL kernels. If this turns out true, I will ensure OpenCL reaches performance parity with Metal, allowing developers to bypass Apple's restriction on OpenCL. This would mean OpenCL can utilize `simdgroup_matrix`, jumping from 25% to 80% ALU utilization in matmul; AI/ML becomes viable. All of this will be made possible by one C header, which you insert into OpenCL kernel code. The header also implements partial conformance to `cl_khr_subgroups` and other subgroup extensions.
 <!--
@@ -45,6 +47,7 @@ Metal (from feature set tables):
 - SIMD-scoped reduction operations
 - SIMD-scoped matrix multiply operations
 - SIMD shift and fill
+- SIMD-group async copy operations
 
 ## Usage
 
