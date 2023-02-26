@@ -19,7 +19,7 @@
 
 - OpenCL does not run on iOS. But SYCL will.
 - OpenCL provides no direct way to query a thread's lane ID within a subgroup. This is a quirk of how the AIR workaround is implemented. Therefore, the subgroup functions aren't fully OpenCL 2.0 compliant. To work around this, always make threadgroup sizes a multiple of 32, then take `get_local_id(0) % 32`.
-- For the same reasons as the previous note, clustered subgroup operations fail on Apple 7 unless subgroup size is 1, 4, or 32. They do not fail on Apple 8, which has hardware support ("simd shuffle and fill"). NOTE THIS INCOMPATIBILITY before making software that will work on M2 GPUs, but fail on M1 GPUs.
+- For the same reasons as the previous note, clustered subgroup operations fail unless subgroup size is 1, 4, or 32. The remaining sizes could technically be implemented on Apple 8, which has hardware support ("simd shuffle and fill"). However, it may not be possible to determine the GPU architecture inside OpenCL code. The Metal Standard Library functions for "simd shuffle and fill" are exposed, so just use those if needed.
 - OpenCL events will infect any commands in their vicinity. After making any `clEnqueueXXX` call that signals a `cl_event`, flush the queue. Do the same immediately before waiting on any `cl_event`.
 - OpenCL profiling is buggy. It reports time spans as 3/125 times their actual value, because it treats `mach_timebase` ticks like nanoseconds.
 - OpenCL seems to not support pre-compiled binary functions - I could not get it to work. Use Metal if startup overhead is mission critical (e.g. real-time rendering). Note that Apple's JIT shader compiler harnesses the system Metal Shader Cache, and is quite fast.
