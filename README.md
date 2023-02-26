@@ -50,8 +50,7 @@ Metal (from feature set tables):
 
 ```opencl
 // OpenCL code
-#include <metal_stdlib>
-// unfortunately cannot replicate "using namespace metal;" - OpenCL C is not C++
+#include "metal_stdlib.h"
 
 __kernel void vector_add(__global const int *A, __global const int *B, __global int *C) {
   
@@ -59,7 +58,7 @@ __kernel void vector_add(__global const int *A, __global const int *B, __global 
      int i = get_global_id(0);
   
      // Do the operation
-     C[i] = A[i] + B[i];
+     C[i] = A[i] + B[i] + simd_prefix_inclusive_sum(i);
 }
 ```
 
