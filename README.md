@@ -29,7 +29,7 @@ This repository is a solution to the problem. In Apple's OpenCL driver, the `__a
 
 ## Features
 
-The biggest motivating factor behind this library was inaccessibility of SIMD-scoped operations. However, this library can expose unrelated Metal functionality in the future.
+The biggest motivating factor behind this library was inaccessibility of SIMD-scoped operations. However, this library can expose other Metal functionality in the future.
 
 OpenCL (from extension specification):
 - cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions)
