@@ -10,7 +10,7 @@ This repository is a solution to the problem. In Apple's OpenCL driver, the `__a
 
 ### Why you don't need to use Metal directly
 
-- OpenCL only permits 256 threads/threadgroup instead of 1024. That's fine, because anything above 256 threads seriously deterioriates performance.
+- OpenCL only permits 256 threads/threadgroup instead of 1024. That's fine, because anything above 256 threads significantly deterioriates performance for memory-heavy workloads.
 - OpenCL does not support `half` precision. That's fine, because the M1 GPU architecture doesn't either. The M1 and A15 made FP32 just as fast as FP16; half-precision only remains to decrease register pressure and register bandwidth.
 - OpenCL doesn't allow access to the `MTLCommandBuffer`. That's fine, because it internally bunches up `clEnqueueXXX` calls into command buffers. It does this more optimally than many manual solutions.
 - OpenCL is especially fast at AI/ML applications that [dispatch several small operations](https://github.com/philipturner/metal-experiment-1). It should have much better sequential throughput than PyTorch.
