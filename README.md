@@ -1,18 +1,17 @@
 # OpenCL Metal Stdlib
 
 > Note: This is a work in progress; please don't use the header in production code yet.
->
-> TODO: Rewrite the intro for this repository, it seems almost certainly viable now.
 
-(Very tentative) We may be able to access SIMD-group reductions through OpenCL kernels. If this turns out true, I will ensure OpenCL reaches performance parity with Metal, allowing developers to bypass Apple's restriction on OpenCL. This would mean OpenCL can utilize `simdgroup_matrix`, jumping from 25% to 80% ALU utilization in matmul; AI/ML becomes viable. All of this will be made possible by one C header, which you insert into OpenCL kernel code. The header also implements partial conformance to `cl_khr_subgroups` and other subgroup extensions.
-<!--
-- TODO: Integrate this into VkFFT, tinygrad, DLPrimitives.
--->
+A header for accessing functions from the Metal Standard Library inside OpenCL code.
 
-### Why you don't to use Metal directly
+The Apple GPU was designed to have slower communication between SIMD groups in a threadgroup, but faster communication within a single SIMD. This tradeoff improves power efficiency and requires modifying algorithms to utilize SIMD-scoped operations. In OpenCL, Apple does not expose such operations to the shading language. These would be possible under OpenCL 2.0 or the `cl_khr_subgroups` extension, but Apple has deprecated OpenCL. The instructions are only exposed to Metal. This restriction fundamentally makes some OpenCL code bases slower than if written in Metal, including molecular dynamics code. It also makes matrix multiplication drop to 1/3 of maximum performance, becoming no faster than the CPU's AMX. Third-party code cannot harness the Apple GPU for AI/ML without using the `simdgroup_matrix` instruction set.
+
+This repository is a solution to the problem. In Apple's OpenCL driver, the `__asm` keyword lowers down to AIR (Apple Intermediate Representation). Certain OpenCL Standard Library functions are implemented directly through bindings to AIR. Any function, including SIMD-scoped operations, can be exposed this way. As long as it is a callable AIR function. This imposes some unexpected constraints and prevents full conformance to the `cl_khr_subgroups` extension. Client code can still harness SIMD-scoped operations to reach maximum performance, just with a minor restriction to how threads are dispatched.
+
+### Why you don't need to use Metal directly
 
 - OpenCL only permits 256 threads/threadgroup instead of 1024. That's fine, because anything above 256 threads seriously deterioriates performance.
-- OpenCL does not support `half` precision. That's fine, because the M1 GPU architecture doesn't either.
+- OpenCL does not support `half` precision. That's fine, because the M1 GPU architecture doesn't either. The M1 and A15 made FP32 just as fast as FP16; half-precision only remains to decrease register pressure and register bandwidth.
 - OpenCL doesn't allow access to the `MTLCommandBuffer`. That's fine, because it internally bunches up `clEnqueueXXX` calls into command buffers. It does this more optimally than many manual solutions.
 - OpenCL is especially fast at AI/ML applications that [dispatch several small operations](https://github.com/philipturner/metal-experiment-1). It should have much better sequential throughput than PyTorch.
 - [SYCL](https://registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html#introduction) will hopefully have a backend for Metal in the future. That means you can use another standardized Khronos API soon. If you're planning to invest time and money migrating OpenCL applications to Metal, the port may become obsolete soon. Note that this is speculative, and not professional advice.
