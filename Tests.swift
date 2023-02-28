@@ -205,19 +205,21 @@ protocol GPUCommandQueue {
 
 // MARK: - Metal Types
 
-class MetalBackend {
-  
+class MetalBackend: GPUBackend {
+  typealias Device = MetalDevice
+  typealias Library = MetalLibrary
+  typealias Kernel = MetalKernel
+  typealias Buffer = MetalBuffer
+  typealias CommandQueue = MetalCommandQueue
 }
 
-class MetalDevice {
+class MetalDevice: GPUDevice {
+  typealias Backend = MetalBackend
+  
   var device: MTLDevice
   
-  init(device: MTLDevice) {
-    self.device = device
-  }
-  
-  convenience init() {
-    self.init(device: MTLCopyAllDevices().first!)
+  required init() {
+    self.device = MTLCopyAllDevices().first!
   }
   
   func createLibrary(source: String) -> MetalLibrary {
@@ -244,7 +246,9 @@ class MetalDevice {
   }
 }
 
-class MetalLibrary {
+class MetalLibrary: GPULibrary {
+  typealias Backend = MetalBackend
+  
   var library: MTLLibrary
   
   init(library: MTLLibrary) {
@@ -259,7 +263,9 @@ class MetalLibrary {
   }
 }
 
-class MetalKernel {
+class MetalKernel: GPUKernel {
+  typealias Backend = MetalBackend
+  
   var pipeline: MTLComputePipelineState
   
   init(pipeline: MTLComputePipelineState) {
@@ -267,21 +273,23 @@ class MetalKernel {
   }
 }
 
-class MetalBuffer {
+class MetalBuffer: GPUBuffer {
+  typealias Backend = MetalBackend
+  
   var buffer: MTLBuffer
   
   init(buffer: MTLBuffer) {
     self.buffer = buffer
   }
   
-  func setElement<T>(_ bytes: Array<T>) {
+  func setElements<T>(_ bytes: Array<T>) {
     bytes.withUnsafeBufferPointer { pointer in
       let numBytes = pointer.count * MemoryLayout<T>.stride
       memcpy(buffer.contents(), pointer.baseAddress, numBytes)
     }
   }
   
-  func getElement<T>() -> Array<T> {
+  func getElements<T>() -> Array<T> {
     let arraySize = buffer.length / MemoryLayout<T>.stride
     precondition(
       buffer.length % MemoryLayout<T>.stride == 0,
@@ -295,7 +303,9 @@ class MetalBuffer {
   }
 }
 
-class MetalCommandQueue {
+class MetalCommandQueue: GPUCommandQueue {
+  typealias Backend = MetalBackend
+  
   var commandQueue: MTLCommandQueue
   var commandBuffer: MTLCommandBuffer!
   var encoder: MTLComputeCommandEncoder!
@@ -305,6 +315,9 @@ class MetalCommandQueue {
   }
   
   func startCommandBuffer() {
+    precondition(
+      commandBuffer?.status == .committed,
+      "Called `startCommandBuffer` before submitting the current command buffer.")
     commandBuffer = commandQueue.makeCommandBuffer()!
     encoder = commandBuffer.makeComputeCommandEncoder()!
   }
@@ -323,7 +336,9 @@ class MetalCommandQueue {
   }
   
   func dispatchThreads(_ threads: Int, threadgroupSize: Int) {
-    
+    encoder.dispatchThreads(
+      MTLSizeMake(threads, 1, 1),
+      threadsPerThreadgroup: MTLSizeMake(threadgroupSize, 1, 1))
   }
   
   func submitCommandBuffer() {
@@ -332,34 +347,122 @@ class MetalCommandQueue {
   }
   
   func finishCommands() {
+    precondition(
+      commandBuffer.status == .committed,
+      "Called `finishCommands` before submitting the current command buffer.")
     commandBuffer.waitUntilCompleted()
   }
 }
 
 // MARK: - OpenCL Types
 
+func checkOpenCLError(
+  _ ret: Int32,
+  file: StaticString = #file,
+  line: UInt = #line
+) {
+  if _slowPath(ret != CL_SUCCESS) {
+    fatalError("Encountered OpenCL error code \(ret).", file: file, line: line)
+  }
+}
+
 class OpenCLBackend {
   
 }
 
 class OpenCLDevice {
+  var platform: cl_platform_id
+  var device: cl_device_id
+  var context: cl_context
   
+  init() {
+    var platform: cl_platform_id? = nil
+    var ret_num_platforms: cl_uint = 0
+    checkOpenCLError(clGetPlatformIDs(1, &platform, &ret_num_platforms))
+    self.platform = platform!
+    
+    var device: cl_device_id? = nil
+    var ret_num_devices: cl_uint = 0
+    checkOpenCLError(clGetDeviceIDs(
+      platform, cl_device_type(CL_DEVICE_TYPE_DEFAULT), 1, &device,
+      &ret_num_devices))
+    self.device = device!
+    
+    var ret: cl_int = 0
+    self.context = clCreateContext(nil, 1, &device, nil, nil, &ret)
+    checkOpenCLError(ret)
+  }
+  
+  deinit {
+    clReleaseContext(context)
+  }
+  
+//  func createLibrary(source: String) -> Backend.Library
+//
+//  func createBuffer(length: Int) -> Backend.Buffer
+//
+//  func createBuffer<T>(_ bytes: Array<T>) -> Backend.Buffer
+//
+//  func createCommandQueue() -> Backend.CommandQueue
 }
 
 class OpenCLLibrary {
+  var program: cl_program
   
+  init(program: cl_program) {
+    self.program = program
+  }
+  
+  deinit {
+    clReleaseProgram(program)
+  }
+  
+  func createKernel(name: String) -> OpenCLKernel {
+    var ret: cl_int = 0
+    let kernel = clCreateKernel(program, name, &ret)
+    checkOpenCLError(ret)
+    return OpenCLKernel(kernel: kernel!)
+  }
 }
 
 class OpenCLKernel {
+  var kernel: cl_kernel
   
+  init(kernel: cl_kernel) {
+    self.kernel = kernel
+  }
+  
+  deinit {
+    clReleaseKernel(kernel)
+  }
 }
 
 class OpenCLBuffer {
+  var buffer: cl_mem
   
+  init(buffer: cl_mem) {
+    self.buffer = buffer
+  }
+  
+  deinit {
+    clReleaseMemObject(buffer)
+  }
 }
 
 class OpenCLCommandQueue {
+  var commandQueue: cl_command_queue
   
+  init(commandQueue: cl_command_queue) {
+    self.commandQueue = commandQueue
+  }
+  
+  deinit {
+    clFlush(commandQueue)
+    clFinish(commandQueue)
+    clReleaseCommandQueue(commandQueue)
+  }
 }
 
 // MARK: - Tests
+
+// It's okay to generate the source code twice, if that makes debugging easier.
