@@ -9,7 +9,7 @@
 - TODO: Integrate this into VkFFT, tinygrad, DLPrimitives.
 -->
 
-### Why you don't need Metal
+### Why you don't to use Metal directly
 
 - OpenCL only permits 256 threads/threadgroup instead of 1024. That's fine, because anything above 256 threads seriously deterioriates performance.
 - OpenCL does not support `half` precision. That's fine, because the M1 GPU architecture doesn't either.
