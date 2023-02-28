@@ -45,9 +45,9 @@ Metal (from feature set tables):
 - Quad-scoped permute operations
 - SIMD-scoped permute operations
 - SIMD-scoped reduction operations
-- SIMD-scoped matrix multiply operations
-- SIMD shift and fill
-- SIMD-group async copy operations
+- SIMD-scoped matrix multiply operations - not implemented yet
+- SIMD shift and fill - not implemented yet
+- SIMD-group async copy operations - not implemented yet
 
 ## Usage
 
