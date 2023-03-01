@@ -51,9 +51,13 @@ Metal (from feature set tables):
 
 ## Usage
 
+Include the header in shader code, ensuring that it's only included for Apple silicon GPUs.
+
 ```opencl
 // OpenCL code
+#if __VENDOR_APPLE__
 #include "metal_stdlib.h"
+#endif
 
 __kernel void vector_add(__global const int *A, __global const int *B, __global int *C) {
   
@@ -61,7 +65,15 @@ __kernel void vector_add(__global const int *A, __global const int *B, __global 
      int i = get_global_id(0);
   
      // Do the operation
+#if __VENDOR_APPLE__
+     // You can also use the function defined by the OpenCL subgroups extension.
+     // This would make the line of code runnable on Windows.
      C[i] = A[i] + B[i] + simd_prefix_inclusive_sum(i);
+#else
+     __local int scratch_memory[__VENDOR_SIMD_WIDTH__];
+     // ... (sum up everything into the first entry, the slow way)
+     C[i] = A[i] + B[i] + scratch_memory[0];
+#endif
 }
 ```
 
