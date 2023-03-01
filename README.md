@@ -71,8 +71,8 @@ __kernel void vector_add(__global const int *A, __global const int *B, __global 
      C[i] = A[i] + B[i] + simd_prefix_inclusive_sum(i);
 #else
      __local int scratch_memory[__VENDOR_SIMD_WIDTH__];
-     // ... (sum up everything into the first entry, the slow way)
-     C[i] = A[i] + B[i] + scratch_memory[0];
+     // ... (perform parallel prefix sum, the slow way)
+     C[i] = A[i] + B[i] + scratch_memory[get_local_id(0) % __VENDOR_SIMD_WIDTH__];
 #endif
 }
 ```
