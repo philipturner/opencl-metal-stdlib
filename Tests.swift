@@ -42,17 +42,18 @@ if let headersDirectoryFlagIndex = CommandLine.arguments.firstIndex(
   }
   headerURL = _headerURL
 }
+
 guard let headerData = FileManager.default.contents(
-  atPath: headerURL.absoluteString) else {
-  fatalError("Invalid header path: \(headerURL.absoluteString)")
+  atPath: headerURL.relativePath) else {
+  fatalError("Invalid header path: \(headerURL.relativePath)")
 }
 guard let headerString = String(data: headerData, encoding: .utf8) else {
-  fatalError("Malformatted header: \(headerURL.absoluteString)")
+  fatalError("Malformatted header: \(headerURL.relativePath)")
 }
 
-var defaultTypes = ["char", "short", "int", "long"]
-defaultTypes += defaultTypes.map { "u" + $0 }
-defaultTypes.append("float")
+//var defaultTypeStrings = ["char", "short", "int", "long"]
+//defaultTypeStrings += defaultTypeStrings.map { "u" + $0 }
+//defaultTypeStrings.append("float")
 
 protocol ShaderRepresentable {
   static var shaderType: String { get }
@@ -85,9 +86,51 @@ extension SIMD4: ShaderRepresentable where Scalar: ShaderRepresentable {
   }
 }
 
+typealias AutogeneratibleScalar =
+  ShaderRepresentable & Numeric & SIMDScalar
+
+typealias AutogeneratibleVector =
+  ShaderRepresentable & SIMD<AutogeneratibleScalar>
+
+let defaultTypeGroups: [any TypeGroupProtocol.Type] = [
+  TypeGroup<Int8>.self,
+  TypeGroup<Int16>.self,
+  TypeGroup<Int32>.self,
+  TypeGroup<Int64>.self,
+  TypeGroup<UInt8>.self,
+  TypeGroup<UInt16>.self,
+  TypeGroup<UInt32>.self,
+  TypeGroup<UInt64>.self,
+  TypeGroup<Float>.self,
+]
+
+// Initialize vectors by first initializing the scalar, then initializing the
+// vector through `init(repeating:)`.
+struct TypeGroup<T: AutogeneratibleScalar>: TypeGroupProtocol {
+  static var scalar: T.Type { T.self }
+  static var vector2: SIMD2<T>.Type { SIMD2<T>.self }
+  static var vector3: SIMD3<T>.Type { SIMD3<T>.self }
+  static var vector4: SIMD4<T>.Type { SIMD4<T>.self }
+}
+
+protocol TypeGroupProtocol {
+  associatedtype T: AutogeneratibleScalar
+  static var scalar: T.Type { get }
+  static var vector2: SIMD2<T>.Type { get }
+  static var vector3: SIMD3<T>.Type { get }
+  static var vector4: SIMD4<T>.Type { get }
+}
+
 // Returns a group of shader permutations for each type.
 // Use `auto` keyword to make the body type-generic.
-func generateKernel(body: String, types: [String] = defaultTypes) -> String {
+var defaultTypeStrings = defaultTypeGroups.map { $0.self.scalar.shaderType }
+defaultTypeStrings += defaultTypeGroups.map { $0.self.vector2.shaderType }
+defaultTypeStrings += defaultTypeGroups.map { $0.self.vector3.shaderType }
+defaultTypeStrings += defaultTypeGroups.map { $0.self.vector4.shaderType }
+func generateSource(
+  body: String,
+  types: [String] = defaultTypeStrings
+) -> String {
   var output: String = """
     #if __METAL__
     #include <metal_stdlib>
@@ -360,17 +403,23 @@ func checkOpenCLError(
   }
 }
 
-class OpenCLBackend {
-  
+class OpenCLBackend: GPUBackend {
+  typealias Device = OpenCLDevice
+  typealias Library = OpenCLLibrary
+  typealias Kernel = OpenCLKernel
+  typealias Buffer = OpenCLBuffer
+  typealias CommandQueue = OpenCLCommandQueue
 }
 
-class OpenCLDevice {
+class OpenCLDevice: GPUDevice {
+  typealias Backend = OpenCLBackend
+  
   var platform: cl_platform_id
   var device: cl_device_id
   var context: cl_context
   private var mappingCommandQueue: OpenCLCommandQueue!
   
-  init() {
+  required init() {
     var platform: cl_platform_id? = nil
     var ret_num_platforms: cl_uint = 0
     checkOpenCLError(clGetPlatformIDs(1, &platform, &ret_num_platforms))
@@ -454,7 +503,9 @@ class OpenCLDevice {
   }
 }
 
-class OpenCLLibrary {
+class OpenCLLibrary: GPULibrary {
+  typealias Backend = OpenCLBackend
+  
   var program: cl_program
   
   init(program: cl_program) {
@@ -473,7 +524,9 @@ class OpenCLLibrary {
   }
 }
 
-class OpenCLKernel {
+class OpenCLKernel: GPUKernel {
+  typealias Backend = OpenCLBackend
+  
   var kernel: cl_kernel
   
   init(kernel: cl_kernel) {
@@ -485,7 +538,9 @@ class OpenCLKernel {
   }
 }
 
-class OpenCLBuffer {
+class OpenCLBuffer: GPUBuffer {
+  typealias Backend = OpenCLBackend
+  
   var buffer: cl_mem
   var contents: UnsafeMutableRawPointer
   var length: Int
@@ -521,7 +576,9 @@ class OpenCLBuffer {
   }
 }
 
-class OpenCLCommandQueue {
+class OpenCLCommandQueue: GPUCommandQueue {
+  typealias Backend = OpenCLBackend
+  
   var commandQueue: cl_command_queue
   var currentKernel: OpenCLKernel!
   
@@ -574,4 +631,93 @@ class OpenCLCommandQueue {
 
 // MARK: - Tests
 
+// Run Metal and OpenCL commands in parallel, doubling GPU utilization.
 // It's okay to generate the source code twice, if that makes debugging easier.
+let deviceTypes: [any GPUDevice.Type] = [MetalDevice.self, OpenCLDevice.self]
+
+// Use `Any` type to make an array with different types.
+struct KernelInvocation<T> {
+  var bufferA: any GPUBuffer
+  var bufferB: any GPUBuffer
+  var bufferC: any GPUBuffer
+  var expectedC: Array<T>
+  
+  init(
+    device: any GPUDevice,
+    inputA: Array<T>,
+    inputB: Array<T>,
+    expectedC: Array<T>
+  ) {
+    precondition(
+      inputA.count == inputB.count && inputB.count == expectedC.count,
+      "Inputs had different length.")
+    self.bufferA = device.createBuffer(inputA)
+    self.bufferB = device.createBuffer(inputB)
+    self.bufferC = device.createBuffer(
+      length: expectedC.count * MemoryLayout<T>.stride)
+    self.expectedC = expectedC
+  }
+  
+  // Returns a textual error if something didn't match expected.
+  //
+  // Finish the command queue before validating. It is a good idea to enqueue
+  // future commands and validate asynchronously.
+  func validate() -> String? {
+    let actualC: Array<T> = self.bufferC.getElements()
+    let length = expectedC.count * MemoryLayout<T>.stride
+    if memcmp(actualC, expectedC, length) == 0 {
+      return nil
+    }
+    
+    for i in 0..<expectedC.count {
+      // Workaround for Swift protocols preventing conformance to `Equatable`.
+      var actual = actualC[i]
+      var expected = expectedC[i]
+      if memcmp(&actual, &expected, MemoryLayout<T>.stride) != 0 {
+        return
+          "Element \(i): actual '\(actual)' != expected '\(expected)'"
+      }
+    }
+    fatalError("This should never happen")
+  }
+}
+
+struct KernelInvocationGroup {
+  var invocations: [KernelInvocation<any ShaderRepresentable>]
+  
+  init(
+    source: String,
+    generate: (
+      _ index: Int,
+      _ A: inout Int,
+      _ B: inout Int,
+      _ C: inout Int
+    ) -> Void
+  ) {
+    var A: [Int] = .init(repeating: 0, count: 32)
+    var B: [Int] = .init(repeating: 0, count: 32)
+    var C: [Int] = .init(repeating: 0, count: 32)
+    for i in 0..<32 {
+      generate(i, &A[i], &B[i], &C[i])
+    }
+    
+    for typeGroup in defaultTypeGroups {
+      body(type: typeGroup)
+      
+      // Workaround to turn dynamic type into generic function type in Swift's
+      // type system.
+      
+      // TODO: Separate function for each (scalar, type2, type3, type4)?
+      func body<T: TypeGroupProtocol>(type: T.Type) {
+        
+      }
+    }
+  }
+}
+
+DispatchQueue.concurrentPerform(iterations: 2) { deviceIndex in
+  let device = deviceTypes[deviceIndex].init()
+  let vectorAddSource = generateSource(body: "c[tid] = a[tid] + b[tid];")
+  
+//  var x: [_KernelInvocation<Any>] = [_KernelInvocation(inputs: [Int]())]
+}
