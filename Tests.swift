@@ -173,8 +173,10 @@ protocol GPUKernel {
 protocol GPUBuffer {
   associatedtype Backend: GPUBackend
   
+  // Must finish the queue before calling this.
   func setElements<T>(_ bytes: Array<T>)
   
+  // Must finish the queue before calling this.
   func getElements<T>() -> Array<T>
 }
 
@@ -186,9 +188,6 @@ protocol GPUCommandQueue {
   
   // Call this before binding any arguments.
   func setKernel(_ kernel: Backend.Kernel)
-  
-  // Set raw data argument for the kernel.
-  func setBytes<T>(_ bytes: Array<T>, index: Int)
   
   // Set API buffer argument for the kernel.
   func setBuffer(_ buffer: Backend.Buffer, index: Int)
@@ -326,11 +325,6 @@ class MetalCommandQueue: GPUCommandQueue {
     encoder.setComputePipelineState(kernel.pipeline)
   }
   
-  func setBytes<T>(_ bytes: Array<T>, index: Int) {
-    let numBytes = bytes.count * MemoryLayout<T>.stride
-    encoder.setBytes(bytes, length: numBytes, index: index)
-  }
-  
   func setBuffer(_ buffer: MetalBuffer, index: Int) {
     encoder.setBuffer(buffer.buffer, offset: 0, index: index)
   }
@@ -374,6 +368,7 @@ class OpenCLDevice {
   var platform: cl_platform_id
   var device: cl_device_id
   var context: cl_context
+  private var mappingCommandQueue: OpenCLCommandQueue!
   
   init() {
     var platform: cl_platform_id? = nil
@@ -391,19 +386,72 @@ class OpenCLDevice {
     var ret: cl_int = 0
     self.context = clCreateContext(nil, 1, &device, nil, nil, &ret)
     checkOpenCLError(ret)
+    
+    self.mappingCommandQueue = createCommandQueue()
   }
   
   deinit {
     clReleaseContext(context)
   }
   
-//  func createLibrary(source: String) -> Backend.Library
-//
-//  func createBuffer(length: Int) -> Backend.Buffer
-//
-//  func createBuffer<T>(_ bytes: Array<T>) -> Backend.Buffer
-//
-//  func createCommandQueue() -> Backend.CommandQueue
+  func createLibrary(source: String) -> OpenCLLibrary {
+    var ret: cl_int = 0
+    var source_count = source.count
+    let program = source.withCString { source_ptr in
+      var source_ptr_copy: Optional = source_ptr
+      return clCreateProgramWithSource(
+        context, 1, &source_ptr_copy, &source_count, &ret)
+    }
+    checkOpenCLError(ret)
+    return OpenCLLibrary(program: program!)
+  }
+
+  func createBuffer(length: Int) -> OpenCLBuffer {
+    var ret: cl_int = 0
+    let flags = CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR
+    let buffer = clCreateBuffer(
+      context, cl_mem_flags(flags), length, nil, &ret)
+    checkOpenCLError(ret)
+    
+    let contents = extractHostPointer(buffer: buffer!, length: length)
+    return OpenCLBuffer(buffer: buffer!, contents: contents, length: length)
+  }
+
+  func createBuffer<T>(_ bytes: Array<T>) -> OpenCLBuffer {
+    var ret: cl_int = 0
+    let flags = CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR | CL_MEM_COPY_HOST_PTR
+    var length = 0
+    let buffer = bytes.withUnsafeBytes { pointer in
+      length = pointer.count
+      let casted = unsafeBitCast(
+        pointer.baseAddress, to: UnsafeMutableRawPointer?.self)
+      return clCreateBuffer(
+        context, cl_mem_flags(flags), length, casted, &ret)
+      
+    }
+    checkOpenCLError(ret)
+    
+    let contents = extractHostPointer(buffer: buffer!, length: length)
+    return OpenCLBuffer(buffer: buffer!, contents: contents, length: length)
+  }
+
+  func createCommandQueue() -> OpenCLCommandQueue {
+    var ret: cl_int = 0
+    let commandQueue = clCreateCommandQueue(context, device, 0, &ret)
+    checkOpenCLError(ret)
+    return OpenCLCommandQueue(commandQueue: commandQueue!)
+  }
+  
+  private func extractHostPointer(
+    buffer: cl_mem, length: Int
+  ) -> UnsafeMutableRawPointer {
+    var ret: cl_int = 0
+    let hostPointer = clEnqueueMapBuffer(
+      mappingCommandQueue.commandQueue, buffer, cl_bool(CL_TRUE),
+      cl_map_flags(CL_MAP_READ | CL_MAP_WRITE), 0, length, 0, nil, nil, &ret)
+    checkOpenCLError(ret)
+    return hostPointer!
+  }
 }
 
 class OpenCLLibrary {
@@ -439,9 +487,33 @@ class OpenCLKernel {
 
 class OpenCLBuffer {
   var buffer: cl_mem
+  var contents: UnsafeMutableRawPointer
+  var length: Int
   
-  init(buffer: cl_mem) {
+  init(buffer: cl_mem, contents: UnsafeMutableRawPointer, length: Int) {
     self.buffer = buffer
+    self.contents = contents
+    self.length = length
+  }
+  
+  func setElements<T>(_ bytes: Array<T>) {
+    bytes.withUnsafeBufferPointer { pointer in
+      let numBytes = pointer.count * MemoryLayout<T>.stride
+      memcpy(contents, pointer.baseAddress, numBytes)
+    }
+  }
+  
+  func getElements<T>() -> Array<T> {
+    let arraySize = length / MemoryLayout<T>.stride
+    precondition(
+      length % MemoryLayout<T>.stride == 0,
+      "Buffer not evenly divisible into elements of type '\(T.self)'.")
+    
+    // Using unsafe array initializer to avoid unnecessary copy.
+    return Array(unsafeUninitializedCapacity: arraySize) { pointer, count in
+      memcpy(pointer.baseAddress, contents, length)
+      count = arraySize
+    }
   }
   
   deinit {
@@ -451,9 +523,46 @@ class OpenCLBuffer {
 
 class OpenCLCommandQueue {
   var commandQueue: cl_command_queue
+  var currentKernel: OpenCLKernel!
   
   init(commandQueue: cl_command_queue) {
     self.commandQueue = commandQueue
+  }
+  
+  func startCommandBuffer() {
+    precondition(
+      currentKernel == nil,
+      "Called `startCommandBuffer` before submitting the current command buffer.")
+  }
+  
+  func setKernel(_ kernel: OpenCLKernel) {
+    currentKernel = kernel
+  }
+  
+  func setBuffer(_ buffer: OpenCLBuffer, index: Int) {
+    var argument = buffer.buffer
+    checkOpenCLError(clSetKernelArg(
+      currentKernel.kernel, cl_uint(index), 8, &argument))
+  }
+  
+  func dispatchThreads(_ threads: Int, threadgroupSize: Int) {
+    var workDimensions: Int = threads
+    var localDimensions: Int = threadgroupSize
+    checkOpenCLError(clEnqueueNDRangeKernel(
+      commandQueue, currentKernel.kernel, 1, nil, &workDimensions,
+      &localDimensions, 0, nil, nil))
+  }
+  
+  func submitCommandBuffer() {
+    currentKernel = nil
+    clFlush(commandQueue)
+  }
+  
+  func finishCommands() {
+    precondition(
+      currentKernel == nil,
+      "Called `finishCommands` before submitting the current command buffer.")
+    clFinish(commandQueue)
   }
   
   deinit {
