@@ -121,12 +121,15 @@ protocol TypeGroupProtocol {
   static var vector4: SIMD4<T>.Type { get }
 }
 
-// Returns a group of shader permutations for each type.
+// Returns a group of shader permutations 3for each type.
 // Use `auto` keyword to make the body type-generic.
-var defaultTypeStrings = defaultTypeGroups.map { $0.self.scalar.shaderType }
-defaultTypeStrings += defaultTypeGroups.map { $0.self.vector2.shaderType }
-defaultTypeStrings += defaultTypeGroups.map { $0.self.vector3.shaderType }
-defaultTypeStrings += defaultTypeGroups.map { $0.self.vector4.shaderType }
+let defaultScalarTypeStrings = defaultTypeGroups.map {
+  $0.self.scalar.shaderType
+}
+var defaultTypeStrings = defaultScalarTypeStrings
+defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "2" }
+defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "3" }
+defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "4" }
 func generateSource(
   body: String,
   types: [String] = defaultTypeStrings
@@ -683,9 +686,10 @@ struct KernelInvocation<T> {
 }
 
 struct KernelInvocationGroup {
-  var invocations: [KernelInvocation<any ShaderRepresentable>]
+  var invocations: [KernelInvocation<any ShaderRepresentable>] = []
   
   init(
+    device: any GPUDevice,
     source: String,
     generate: (
       _ index: Int,
@@ -706,10 +710,30 @@ struct KernelInvocationGroup {
       
       // Workaround to turn dynamic type into generic function type in Swift's
       // type system.
-      
-      // TODO: Separate function for each (scalar, type2, type3, type4)?
       func body<T: TypeGroupProtocol>(type: T.Type) {
+        typealias T1 = T.T
+        typealias T2 = SIMD2<T.T>
+        typealias T3 = SIMD3<T.T>
+        typealias T4 = SIMD4<T.T>
         
+        let scalarsA: [T1] = A.map { T1(exactly: $0)! }
+        let scalarsB: [T1] = B.map { T1(exactly: $0)! }
+        let scalarsC: [T1] = C.map { T1(exactly: $0)! }
+        let scalarInvocation = KernelInvocation(
+          device: device, inputA: scalarsA, inputB: scalarsB,
+          expectedC: scalarsC)
+        invocations.append(
+          scalarInvocation as! KernelInvocation<any ShaderRepresentable>)
+        
+        appendVectorInvocation(type: T2.self)
+        appendVectorInvocation(type: T3.self)
+        appendVectorInvocation(type: T4.self)
+        
+        func appendVectorInvocation<TN: SIMD>(type: TN.Type)
+        where TN.Scalar: AutogeneratibleScalar
+        {
+          let vectorsA: [TN]
+        }
       }
     }
   }
