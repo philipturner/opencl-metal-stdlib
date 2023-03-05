@@ -55,10 +55,6 @@ guard headerString != nil else {
   fatalError("Malformatted header: \(headerURL.relativePath)")
 }
 
-//var defaultTypeStrings = ["char", "short", "int", "long"]
-//defaultTypeStrings += defaultTypeStrings.map { "u" + $0 }
-//defaultTypeStrings.append("float")
-
 protocol ShaderRepresentable {
   static var shaderType: String { get }
 }
@@ -104,6 +100,15 @@ let defaultTypeGroups: [any TypeGroupProtocol.Type] = [
   TypeGroup<UInt16>.self,
   TypeGroup<UInt32>.self,
   TypeGroup<Float>.self,
+]
+
+let integerTypeGroups: [any TypeGroupProtocol.Type] = [
+  TypeGroup<Int8>.self,
+  TypeGroup<Int16>.self,
+  TypeGroup<Int32>.self,
+  TypeGroup<UInt8>.self,
+  TypeGroup<UInt16>.self,
+  TypeGroup<UInt32>.self,
 ]
 
 // Initialize vectors by first initializing the scalar, then initializing the
@@ -729,12 +734,33 @@ struct KernelInvocation<T>: KernelInvocationProtocol {
       // Workaround for Swift protocols preventing conformance to `Equatable`.
       var actual = actualC[i]
       var expected = expectedC[i]
-      if memcmp(&actual, &expected, MemoryLayout<T>.stride) != 0 {
-        return
-          "Element \(i): actual '\(actual)' != expected '\(expected)'"
+      if _slowPath(memcmp(&actual, &expected, MemoryLayout<T>.stride) != 0) {
+        // Sometimes floating-point numbers confuse -0.0 with +0.0.
+        var shouldFail = true
+        if T.self == Float.self {
+          shouldFail = (actual as! Float) != (expected as! Float)
+        }
+        if T.self == SIMD2<Float>.self {
+          shouldFail = any((actual as! SIMD2<Float>) .!=
+                           (expected as! SIMD2<Float>))
+        }
+        if T.self == SIMD3<Float>.self {
+          shouldFail = any((actual as! SIMD3<Float>) .!=
+                           (expected as! SIMD3<Float>))
+        }
+        if T.self == SIMD4<Float>.self {
+          shouldFail = any((actual as! SIMD4<Float>) .!=
+                           (expected as! SIMD4<Float>))
+        }
+        if shouldFail {
+//          print("Element \(i): actual '\(actual)' != expected '\(expected)'")
+          return "Element \(i): actual '\(actual)' != expected '\(expected)'"
+        }
       }
     }
-    fatalError("This should never happen")
+    
+    // The mismatched element simply occurred because of floating-point signs.
+    return nil
   }
 }
 
@@ -758,6 +784,8 @@ struct KernelInvocationGroup {
   init(
     device: any GPUDevice,
     body: String,
+    sequenceSize: Int,
+    omitFloat: Bool = false,
     generate: (
       _ index: Int,
       _ A: inout Int,
@@ -770,14 +798,23 @@ struct KernelInvocationGroup {
     let source = generateSource(body: body)
     let library = device.createLibrary(source: source)
     
-    var A: [Int] = .init(repeating: 0, count: 32)
-    var B: [Int] = .init(repeating: 0, count: 32)
-    var C: [Int] = .init(repeating: 0, count: 32)
-    for i in 0..<32 {
+    precondition(
+      sequenceSize <= 32 && sequenceSize.nonzeroBitCount == 1,
+      "Sequence size must be power of 2, no more than 32.")
+    var A: [Int] = .init(repeating: 0, count: sequenceSize)
+    var B: [Int] = .init(repeating: 0, count: sequenceSize)
+    var C: [Int] = .init(repeating: 0, count: sequenceSize)
+    for i in 0..<sequenceSize {
       generate(i, &A[i], &B[i], &C[i])
     }
+    while A.count < 32 {
+      A.append(contentsOf: A)
+      B.append(contentsOf: B)
+      C.append(contentsOf: C)
+    }
     
-    for typeGroup in defaultTypeGroups {
+    let typeGroups = omitFloat ? integerTypeGroups : defaultTypeGroups
+    for typeGroup in typeGroups {
       body(type: typeGroup)
       
       // Workaround to turn dynamic type into generic function type in Swift's
@@ -848,29 +885,28 @@ struct KernelInvocationGroup {
   }
 }
 
-// Run Metal and OpenCL commands in parallel, doubling GPU utilization.
+// Run Metal and OpenCL commands in parallel, improving GPU utilization.
 // It's okay to generate the source code twice, if that makes debugging easier.
 let deviceTypes: [any GPUDevice.Type] = [
-  MetalDevice.self, OpenCLDevice.self, OpenCLDevice.self
+  MetalDevice.self,
+  OpenCLDevice.self,
+  OpenCLDevice.self,
+  OpenCLDevice.self,
+  OpenCLDevice.self,
 ]
 
-// Test both Metal Stdlib bindings and OpenCL subgroup extension functions.
-// The third CPU thread encodes commands for OpenCL standard library bindings.
-DispatchQueue.concurrentPerform(iterations: 3) { deviceIndex in
+// Thread 1: Metal Stdlib functions form Metal
+// Thread 2: Metal Stdlib functions form OpenCL
+// Thread 3: base OpenCL Stdlib extensions
+// Thread 4: clustered functions
+// Thread 5: legacy OpenCL subgroup functions
+DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   let device = deviceTypes[deviceIndex].init()
   let queue = device.createCommandQueue()
   
-  let useExtensions = deviceIndex == 2
-  func selectFunction(
-    _ metalFunction: String,
-    _ openclFunction: String
-  ) -> String {
-    if useExtensions {
-      return openclFunction
-    } else {
-      return metalFunction
-    }
-  }
+  let isExtensionThread = deviceIndex == 2
+  let isClusteredThread = deviceIndex == 3
+  let isHelperThread = deviceIndex == 4
   
   var allGroups: [KernelInvocationGroup] = []
   func appendGroup(_ group: KernelInvocationGroup) {
@@ -882,8 +918,9 @@ DispatchQueue.concurrentPerform(iterations: 3) { deviceIndex in
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = a[tid] + b[tid];
-      """,
+        c[tid] = a[tid] + b[tid];
+        """,
+      sequenceSize: 32,
       generate: { index, A, B, C in
         A = index
         B = 2 * index
@@ -894,36 +931,191 @@ DispatchQueue.concurrentPerform(iterations: 3) { deviceIndex in
   
   // Integer sequences cannot produce something over 127, because that would
   // overflow an 8-bit signed integer.
-  let integerSumSequence = [
-    0, 1, 2, 3, 4, 5, 6, 7,
+  let sumSequence4 = [
+    12, 33, 22, 4,
+  ]
+  let productSequence4 = [
+    7, 1, 5, 2,
+  ]
+  // bitwiseSequence
+  precondition(sumSequence4.reduce(0, +) == 71)
+  precondition(sumSequence4.reduce(0, +) <= 127)
+  precondition(productSequence4.reduce(1, *) == 70)
+  precondition(productSequence4.reduce(1, *) <= 127)
+  
+  let sumSequence32 = [
+    2, 1, 0, 3, 4, 5, 6, 7,
     7, 6, 5, 4, 3, 2, 1, 0,
     1, 2, 3, 4, 0, 7, 6, 5,
     5, 8, 2, 1, 4, 4, 4, 3,
   ]
-  let integerProductSequence = [
+  let productSequence32 = [
     1, 1, 1, 1, 1, 3, 1, 1,
     1, 2, 1, 1, 1, 1, 2, 1,
     1, 1, 2, 1, 2, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 2,
   ]
-  precondition(integerSumSequence.reduce(0, +) == 115)
-  precondition(integerSumSequence.reduce(0, +) <= 127)
-  precondition(integerProductSequence.reduce(1, *) == 96)
-  precondition(integerProductSequence.reduce(1, *) <= 127)
+  // bitwiseSequence
+  precondition(sumSequence32.reduce(0, +) == 115)
+  precondition(sumSequence32.reduce(0, +) <= 127)
+  precondition(productSequence32.reduce(1, *) == 96)
+  precondition(productSequence32.reduce(1, *) <= 127)
   
-  do {
-    let integerSum = integerSumSequence.reduce(0, +)
-    let function = selectFunction(
-      "simd_sum", "sub_group_reduce_add")
+  enum Scope {
+    case quad
+    case simd
+    
+    var clusterSize: Int {
+      switch self {
+      case .quad: return 4
+      case .simd: return 32
+      }
+    }
+    
+    var metalPrefix: String {
+      switch self {
+      case .quad: return "quad"
+      case .simd: return "simd"
+      }
+    }
+  }
+  
+  struct ReductionParams {
+    var scope: Scope
+    var metalName: String
+    var openclName: String
+    
+    // Before cl_khr_subgroup_non_uniform_arithmetic, certain reduction
+    // operations were not supported.
+    var preNonUniform: Bool
+    
+    // Whether to only use integers.
+    var omitFloat: Bool
+    
+    // The number sequence to use.
+    var sequence: [Int]
+    
+    // The mathematical identity of the transformation. 0 for add, 1 for mul.
+    var identity: Int
+    
+    // Combine two operands in sequence.
+    var execute: (Int, Int) -> Int
+  }
+  
+  // TODO: Wrap this in a loop for add, mul, or, xor, and
+  // TODO: Bitwise sequence
+  let reductionLoopParams = [
+    ReductionParams(
+      scope: .quad, metalName: "sum", openclName: "add",
+      preNonUniform: true, omitFloat: false, sequence: sumSequence4,
+      identity: 0, execute: +),
+    ReductionParams(
+      scope: .simd, metalName: "sum", openclName: "add",
+      preNonUniform: true, omitFloat: false, sequence: sumSequence32,
+      identity: 0, execute: +),
+    ReductionParams(
+      scope: .quad, metalName: "product", openclName: "mul",
+      preNonUniform: false, omitFloat: false, sequence: productSequence4,
+      identity: 1, execute: *),
+    ReductionParams(
+      scope: .simd, metalName: "product", openclName: "mul",
+      preNonUniform: false, omitFloat: false, sequence: productSequence32,
+      identity: 1, execute: *),
+  ]
+  
+  for params in reductionLoopParams {
+    if params.scope == .quad {
+      if isExtensionThread || isHelperThread {
+        // This will not compile.
+        continue
+      }
+    }
+    
+    if isHelperThread && !params.preNonUniform {
+      // Don't encode work you don't need.
+      continue
+    }
+    
+    let totalResult = params.sequence.reduce(params.identity, params.execute)
+    var baseFunction: String
+    var clusterSize: String
+    if isHelperThread {
+      baseFunction = "sub_group_reduce_\(params.openclName)"
+      clusterSize = ""
+    } else if isClusteredThread {
+      baseFunction = "sub_group_clustered_reduce_\(params.openclName)"
+      clusterSize = ", \(params.scope.clusterSize)"
+    } else if isExtensionThread {
+      baseFunction = "sub_group_non_uniform_reduce_\(params.openclName)"
+      clusterSize = ""
+    } else {
+      baseFunction = "\(params.scope.metalPrefix)_\(params.metalName)"
+      clusterSize = ""
+    }
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = \(function)(a[tid]);
+      c[tid] = \(baseFunction)(a[tid]\(clusterSize));
       """,
+      sequenceSize: params.scope.clusterSize,
       generate: { index, A, B, C in
-        A = integerSumSequence[index]
+        A = params.sequence[index]
         B = 0
-        C = integerSum
+        C = totalResult
+      }
+    ))
+    
+    var partialResult = params.identity
+    var exclusiveSequence: [Int] = []
+    for i in 0..<params.scope.clusterSize {
+      exclusiveSequence.append(partialResult)
+      exclusiveSequence[i] = partialResult
+      partialResult = params.execute(partialResult, params.sequence[i])
+    }
+    
+    var exclusiveFunction: String
+    if isHelperThread {
+      exclusiveFunction = "sub_group_scan_exclusive_\(params.openclName)"
+    } else if isClusteredThread {
+      exclusiveFunction = "sub_group_clustered_scan_exclusive_\(params.openclName)"
+    } else if isExtensionThread {
+      exclusiveFunction = "sub_group_non_uniform_scan_exclusive_\(params.openclName)"
+    } else {
+      exclusiveFunction = "\(params.scope.metalPrefix)_prefix_exclusive_\(params.metalName)"
+    }
+    appendGroup(KernelInvocationGroup(
+      device: device,
+      body: """
+      c[tid] = \(exclusiveFunction)(a[tid]\(clusterSize));
+      """,
+      sequenceSize: params.scope.clusterSize,
+      generate: { index, A, B, C in
+        A = params.sequence[index]
+        B = 0
+        C = exclusiveSequence[index]
+      }
+    ))
+    
+    var inclusiveFunction: String
+    if isHelperThread {
+      inclusiveFunction = "sub_group_scan_inclusive_\(params.openclName)"
+    } else if isClusteredThread {
+      inclusiveFunction = "sub_group_clustered_scan_inclusive_\(params.openclName)"
+    } else if isExtensionThread {
+      inclusiveFunction = "sub_group_non_uniform_scan_inclusive_\(params.openclName)"
+    } else {
+      inclusiveFunction = "\(params.scope.metalPrefix)_prefix_inclusive_\(params.metalName)"
+    }
+    appendGroup(KernelInvocationGroup(
+      device: device,
+      body: """
+      c[tid] = \(inclusiveFunction)(a[tid]\(clusterSize));
+      """,
+      sequenceSize: params.scope.clusterSize,
+      generate: { index, A, B, C in
+        A = params.sequence[index]
+        B = 0
+        C = params.execute(exclusiveSequence[index], params.sequence[index])
       }
     ))
   }
