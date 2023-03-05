@@ -50,6 +50,8 @@ Metal (from feature set tables):
 - SIMD shift and fill - not implemented yet
 - SIMD-group async copy operations - not implemented yet
 
+TODO: Versioned GitHub releases and licensing.
+
 ## Usage
 
 Include the header in shader code, ensuring that it's only included for Apple silicon GPUs.
