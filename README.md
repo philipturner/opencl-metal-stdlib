@@ -21,7 +21,7 @@ This repository is a solution to the problem. In Apple's M1 OpenCL driver, the `
 - OpenCL does not run on iOS. But SYCL will.
 - Do not use this header on x86 macOS OpenCL backends. Use a conditional compilation macro to only do SIMD reductions on M1. Other vendors have better communication between SIMDs in a threadgroup, so this isn't as much of a concern as with M1.
 - OpenCL provides no direct way to query a thread's lane ID within a subgroup. This is a quirk of how the AIR workaround is implemented. Therefore, the subgroup functions aren't fully OpenCL 2.0 compliant. To work around this, always make threadgroup sizes a multiple of 32, then take `get_local_id(0) % 32`.
-- For the same reasons as the previous note, clustered subgroup operations fail unless cluster size is 1, 4, or 32. The remaining sizes could technically be implemented on Apple 8, which has hardware support ("simd shuffle and fill"). However, it may not be possible to determine the GPU architecture inside OpenCL code. The Metal Standard Library functions for "simd shuffle and fill" are exposed, so just use those if needed.
+- For the same reasons as the previous note, clustered subgroup operations fail unless cluster size is 4 or 32. The remaining sizes could technically be implemented on Apple 8, which has hardware support ("simd shuffle and fill"). However, it may not be possible to determine the GPU architecture inside OpenCL code. The Metal Standard Library functions for "simd shuffle and fill" are exposed, so just use those if needed.
 - Metal only provides SIMD-scoped operations for 8, 16, and 32-bit types. Therefore, this header cannot expose functions for 64-bit integers. Emulating 64-bit operations is a non-trivial task, so I instead opted to violate Khronos conformance.
 - OpenCL events will trap any commands in their vicinity into the same `MTLCommandBuffer`. After making any `clEnqueueXXX` call that signals a `cl_event`, flush the queue. Do the same immediately before waiting on any `cl_event`.
 - OpenCL queue profiling is not Khronos conformant. It reports time spans as 3/125 times their actual value, because it treats `mach_timebase` ticks like nanoseconds.
@@ -40,7 +40,7 @@ OpenCL (from extension specification):
 - cl_khr_subgroup_non_uniform_arithmetic
 - cl_khr_subgroup_shuffle
 - cl_khr_subgroup_shuffle_relative
-- cl_khr_subgroup_clustered_reduce - with compile-time failure for clusters of 2, 8, or 16
+- cl_khr_subgroup_clustered_reduce - with compile-time failure for clusters of 1, 2, 8, or 16
 
 Metal (from feature set tables):
 - Quad-scoped permute operations
