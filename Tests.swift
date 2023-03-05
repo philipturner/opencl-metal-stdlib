@@ -381,6 +381,7 @@ class MetalCommandQueue: GPUCommandQueue {
   
   func startCommandBuffer() {
     precondition(
+      commandBuffer == nil ||
       commandBuffer?.status == .committed,
       "Called `startCommandBuffer` before submitting the current command buffer.")
     commandBuffer = commandQueue.makeCommandBuffer()!
@@ -714,10 +715,6 @@ struct KernelInvocation<T>: KernelInvocationProtocol {
     self.expectedC = expectedC
   }
   
-  func encode(queue: any GPUCommandQueue) {
-    
-  }
-  
   // Returns a textual error if something didn't match expected.
   //
   // Finish the command queue before validating. It is a good idea to enqueue
@@ -745,11 +742,18 @@ struct KernelInvocation<T>: KernelInvocationProtocol {
 // Bypass's Swift's inability to perform polymorphism over generic parameters.
 protocol KernelInvocationProtocol {
   var typeName: String { get }
-  func encode(queue: any GPUCommandQueue)
+  var kernel: any GPUKernel { get }
+  
+  var bufferA: any GPUBuffer { get }
+  var bufferB: any GPUBuffer { get }
+  var bufferC: any GPUBuffer { get }
+  
   func validate() -> String?
 }
 
 struct KernelInvocationGroup {
+  var deviceType: Any.Type
+  var body: String
   var invocations: [KernelInvocationProtocol] = []
   
   init(
@@ -762,6 +766,8 @@ struct KernelInvocationGroup {
       _ C: inout Int
     ) -> Void
   ) {
+    self.deviceType = type(of: device)
+    self.body = body
     let source = generateSource(body: body)
     let library = device.createLibrary(source: source)
     
@@ -811,28 +817,73 @@ struct KernelInvocationGroup {
   }
   
   func encode(queue: any GPUCommandQueue) {
+    queue.startCommandBuffer()
     
+    for invocation in invocations {
+      queue.setKernel(invocation.kernel)
+      queue.setBuffer(invocation.bufferA, index: 0)
+      queue.setBuffer(invocation.bufferB, index: 1)
+      queue.setBuffer(invocation.bufferC, index: 2)
+      queue.dispatchThreads(32, threadgroupSize: 32)
+    }
+    
+    queue.submitCommandBuffer()
   }
   
   // Must finish the command queue before validating.
   func validate() {
-    
+    for invocation in invocations {
+      if let error = invocation.validate() {
+        let errorMessage = """
+          
+          Kernel invocation failed.
+          Backend: \(deviceType)
+          Type: \(invocation.typeName)
+          Source:\n\(body)
+          \(error)
+          """
+        print(errorMessage)
+        exit(0)
+      }
+    }
   }
 }
 
 // Run Metal and OpenCL commands in parallel, doubling GPU utilization.
 // It's okay to generate the source code twice, if that makes debugging easier.
-let deviceTypes: [any GPUDevice.Type] = [MetalDevice.self, OpenCLDevice.self]
+let deviceTypes: [any GPUDevice.Type] = [
+  MetalDevice.self, OpenCLDevice.self, OpenCLDevice.self
+]
 
-DispatchQueue.concurrentPerform(iterations: 2) { deviceIndex in
+// Test both Metal Stdlib bindings and OpenCL subgroup extension functions.
+// The third CPU thread encodes commands for OpenCL standard library bindings.
+DispatchQueue.concurrentPerform(iterations: 3) { deviceIndex in
   let device = deviceTypes[deviceIndex].init()
-  let vectorAddSource = generateSource(body: "c[tid] = a[tid] + b[tid];")
+  let queue = device.createCommandQueue()
+  let useExtensions = deviceIndex == 2
   
-  let group = KernelInvocationGroup(device: device, body: "c[tid] = a[tid] + b[tid];", generate: { index, A, B, C in
-    A = index
-    B = 2 * index
-    C = A + B
-  })
+  var allGroups: [KernelInvocationGroup] = []
+  func appendGroup(_ group: KernelInvocationGroup) {
+    group.encode(queue: queue)
+    allGroups.append(group)
+  }
   
-//  var x: [_KernelInvocation<Any>] = [_KernelInvocation(inputs: [Int]())]
+  appendGroup(KernelInvocationGroup(
+    device: device,
+    body: """
+      c[tid] = a[tid] + b[tid];
+      """,
+    generate: { index, A, B, C in
+      A = index
+      B = 2 * index
+      C = A + B
+    }
+  ))
+  
+  // Other command groups...
+  
+  queue.finishCommands()
+  for group in allGroups {
+    group.validate()
+  }
 }
