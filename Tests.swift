@@ -100,11 +100,9 @@ let defaultTypeGroups: [any TypeGroupProtocol.Type] = [
   TypeGroup<Int8>.self,
   TypeGroup<Int16>.self,
   TypeGroup<Int32>.self,
-  TypeGroup<Int64>.self,
   TypeGroup<UInt8>.self,
   TypeGroup<UInt16>.self,
   TypeGroup<UInt32>.self,
-  TypeGroup<UInt64>.self,
   TypeGroup<Float>.self,
 ]
 
@@ -382,7 +380,8 @@ class MetalCommandQueue: GPUCommandQueue {
   func startCommandBuffer() {
     precondition(
       commandBuffer == nil ||
-      commandBuffer?.status == .committed,
+      commandBuffer?.status == .committed ||
+      commandBuffer?.status == .completed,
       "Called `startCommandBuffer` before submitting the current command buffer.")
     commandBuffer = commandQueue.makeCommandBuffer()!
     encoder = commandBuffer.makeComputeCommandEncoder()
@@ -860,25 +859,74 @@ let deviceTypes: [any GPUDevice.Type] = [
 DispatchQueue.concurrentPerform(iterations: 3) { deviceIndex in
   let device = deviceTypes[deviceIndex].init()
   let queue = device.createCommandQueue()
+  
   let useExtensions = deviceIndex == 2
+  func selectFunction(
+    _ metalFunction: String,
+    _ openclFunction: String
+  ) -> String {
+    if useExtensions {
+      return openclFunction
+    } else {
+      return metalFunction
+    }
+  }
   
   var allGroups: [KernelInvocationGroup] = []
   func appendGroup(_ group: KernelInvocationGroup) {
     group.encode(queue: queue)
     allGroups.append(group)
   }
-  
-  appendGroup(KernelInvocationGroup(
-    device: device,
-    body: """
+  do {
+    // Vector addition test.
+    appendGroup(KernelInvocationGroup(
+      device: device,
+      body: """
       c[tid] = a[tid] + b[tid];
       """,
-    generate: { index, A, B, C in
-      A = index
-      B = 2 * index
-      C = A + B
-    }
-  ))
+      generate: { index, A, B, C in
+        A = index
+        B = 2 * index
+        C = A + B
+      }
+    ))
+  }
+  
+  // Integer sequences cannot produce something over 127, because that would
+  // overflow an 8-bit signed integer.
+  let integerSumSequence = [
+    0, 1, 2, 3, 4, 5, 6, 7,
+    7, 6, 5, 4, 3, 2, 1, 0,
+    1, 2, 3, 4, 0, 7, 6, 5,
+    5, 8, 2, 1, 4, 4, 4, 3,
+  ]
+  let integerProductSequence = [
+    1, 1, 1, 1, 1, 3, 1, 1,
+    1, 2, 1, 1, 1, 1, 2, 1,
+    1, 1, 2, 1, 2, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 2,
+  ]
+  precondition(integerSumSequence.reduce(0, +) == 115)
+  precondition(integerSumSequence.reduce(0, +) <= 127)
+  precondition(integerProductSequence.reduce(1, *) == 96)
+  precondition(integerProductSequence.reduce(1, *) <= 127)
+  
+  do {
+    let integerSum = integerSumSequence.reduce(0, +)
+    let function = selectFunction(
+      "simd_sum", "sub_group_reduce_add")
+    appendGroup(KernelInvocationGroup(
+      device: device,
+      body: """
+      c[tid] = \(function)(a[tid]);
+      """,
+      generate: { index, A, B, C in
+        A = integerSumSequence[index]
+        B = 0
+        C = integerSum
+      }
+    ))
+  }
   
   // Other command groups...
   
