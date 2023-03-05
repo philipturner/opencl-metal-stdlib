@@ -37,7 +37,7 @@ OpenCL (from extension specification):
 - cl_khr_subgroup_extended_types - without 64-bit types
 - cl_khr_subgroup_non_uniform_vote
 - cl_khr_subgroup_ballot
-- cl_khr_subgroup_non_uniform_arithmetic
+- cl_khr_subgroup_non_uniform_arithmetic - without bitwise prefix reductions
 - cl_khr_subgroup_shuffle
 - cl_khr_subgroup_shuffle_relative
 - cl_khr_subgroup_clustered_reduce - with compile-time failure for clusters of 1, 2, 8, or 16
