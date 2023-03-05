@@ -47,7 +47,11 @@ guard let headerData = FileManager.default.contents(
   atPath: headerURL.relativePath) else {
   fatalError("Invalid header path: \(headerURL.relativePath)")
 }
-guard let headerString = String(data: headerData, encoding: .utf8) else {
+
+// Workaround for Swift semantic capture scope issue.
+var headerString: String?
+headerString = String(data: headerData, encoding: .utf8)
+guard headerString != nil else {
   fatalError("Malformatted header: \(headerURL.relativePath)")
 }
 
@@ -144,7 +148,7 @@ func generateSource(
     #define LOCAL threadgroup
     #define BUFFER_BINDING(index) [[buffer(index)]]
     #else
-    \(headerString)
+    \(headerString!)
     
     #define KERNEL __kernel
     #define GLOBAL __global
@@ -168,7 +172,11 @@ func generateSource(
       #else
       ) {
         uint tid = uint(get_global_id(0));
-        ushort lane_id = ushort(get_local_id(0) % 32);
+      
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wunused-variable"
+        ushort lane_id = ushort(get_local_id(0)) % 32;
+        #pragma clang diagnostic pop
       #endif
         \(body)
       }
@@ -246,6 +254,18 @@ protocol GPUCommandQueue {
   
   // Halts until most recent command buffer has completed.
   func finishCommands()
+}
+
+extension GPUCommandQueue {
+  // Allows for specifying the kernel objects without generic constrants.
+  func setKernel(_ kernel: any GPUKernel) {
+    setKernel(kernel as! Backend.Kernel)
+  }
+  
+  // Allows for specifying the buffer objects without generic constrants.
+  func setBuffer(_ buffer: any GPUBuffer, index: Int) {
+    setBuffer(buffer as! Backend.Buffer, index: index)
+  }
 }
 
 // MARK: - Metal Types
@@ -364,7 +384,7 @@ class MetalCommandQueue: GPUCommandQueue {
       commandBuffer?.status == .committed,
       "Called `startCommandBuffer` before submitting the current command buffer.")
     commandBuffer = commandQueue.makeCommandBuffer()!
-    encoder = commandBuffer.makeComputeCommandEncoder()!
+    encoder = commandBuffer.makeComputeCommandEncoder()
   }
   
   func setKernel(_ kernel: MetalKernel) {
@@ -454,6 +474,36 @@ class OpenCLDevice: GPUDevice {
       return clCreateProgramWithSource(
         context, 1, &source_ptr_copy, &source_count, &ret)
     }
+    checkOpenCLError(ret)
+    
+    var device_copy: Optional = device
+    ret = clBuildProgram(program, 1, &device_copy, nil, nil, nil)
+    
+    // Diagnose errors when the shader won't compile.
+    if ret != 0 {
+      var build_status: cl_build_status = 0
+      var ret2 = clGetProgramBuildInfo(
+        program, device, cl_program_build_info(CL_PROGRAM_BUILD_STATUS), 4,
+        &build_status, nil)
+      precondition(ret2 == 0, "Failed unexpectedly.")
+      print("Build status: \(build_status)")
+      
+      var build_log_size: Int = 0
+      ret2 = clGetProgramBuildInfo(
+        program, device, cl_program_build_info(CL_PROGRAM_BUILD_LOG), 0, nil,
+        &build_log_size)
+      precondition(ret2 == 0, "Failed unexpectedly.")
+      print("Build log size: \(build_log_size)")
+      
+      var build_log = [UInt8](repeating: 0, count: build_log_size)
+      ret2 = clGetProgramBuildInfo(
+        program, device, cl_program_build_info(CL_PROGRAM_BUILD_LOG),
+        build_log_size, &build_log, nil)
+      precondition(ret2 == 0, "Failed unexpectedly.")
+      let logString = String(cString: build_log)
+      print("Build log:\n\(logString)")
+    }
+    
     checkOpenCLError(ret)
     return OpenCLLibrary(program: program!)
   }
@@ -634,12 +684,11 @@ class OpenCLCommandQueue: GPUCommandQueue {
 
 // MARK: - Tests
 
-// Run Metal and OpenCL commands in parallel, doubling GPU utilization.
-// It's okay to generate the source code twice, if that makes debugging easier.
-let deviceTypes: [any GPUDevice.Type] = [MetalDevice.self, OpenCLDevice.self]
-
 // Use `Any` type to make an array with different types.
-struct KernelInvocation<T> {
+struct KernelInvocation<T>: KernelInvocationProtocol {
+  var typeName: String
+  var kernel: any GPUKernel
+  
   var bufferA: any GPUBuffer
   var bufferB: any GPUBuffer
   var bufferC: any GPUBuffer
@@ -647,10 +696,14 @@ struct KernelInvocation<T> {
   
   init(
     device: any GPUDevice,
+    library: any GPULibrary,
     inputA: Array<T>,
     inputB: Array<T>,
     expectedC: Array<T>
   ) {
+    self.typeName = (T.self as! any ShaderRepresentable.Type).shaderType
+    self.kernel = library.createKernel(name: "vectorOperation_\(typeName)")
+    
     precondition(
       inputA.count == inputB.count && inputB.count == expectedC.count,
       "Inputs had different length.")
@@ -659,6 +712,10 @@ struct KernelInvocation<T> {
     self.bufferC = device.createBuffer(
       length: expectedC.count * MemoryLayout<T>.stride)
     self.expectedC = expectedC
+  }
+  
+  func encode(queue: any GPUCommandQueue) {
+    
   }
   
   // Returns a textual error if something didn't match expected.
@@ -685,12 +742,19 @@ struct KernelInvocation<T> {
   }
 }
 
+// Bypass's Swift's inability to perform polymorphism over generic parameters.
+protocol KernelInvocationProtocol {
+  var typeName: String { get }
+  func encode(queue: any GPUCommandQueue)
+  func validate() -> String?
+}
+
 struct KernelInvocationGroup {
-  var invocations: [KernelInvocation<any ShaderRepresentable>] = []
+  var invocations: [KernelInvocationProtocol] = []
   
   init(
     device: any GPUDevice,
-    source: String,
+    body: String,
     generate: (
       _ index: Int,
       _ A: inout Int,
@@ -698,6 +762,9 @@ struct KernelInvocationGroup {
       _ C: inout Int
     ) -> Void
   ) {
+    let source = generateSource(body: body)
+    let library = device.createLibrary(source: source)
+    
     var A: [Int] = .init(repeating: 0, count: 32)
     var B: [Int] = .init(repeating: 0, count: 32)
     var C: [Int] = .init(repeating: 0, count: 32)
@@ -720,28 +787,52 @@ struct KernelInvocationGroup {
         let scalarsB: [T1] = B.map { T1(exactly: $0)! }
         let scalarsC: [T1] = C.map { T1(exactly: $0)! }
         let scalarInvocation = KernelInvocation(
-          device: device, inputA: scalarsA, inputB: scalarsB,
-          expectedC: scalarsC)
-        invocations.append(
-          scalarInvocation as! KernelInvocation<any ShaderRepresentable>)
+          device: device, library: library, inputA: scalarsA,
+          inputB: scalarsB, expectedC: scalarsC)
+        invocations.append(scalarInvocation)
+        
+        func appendVectorInvocation<TN: SIMD>(type: TN.Type)
+        where TN.Scalar: AutogeneratibleScalar, TN.Scalar == T1
+        {
+          let vectorsA: [TN] = scalarsA.map(TN.init(repeating:))
+          let vectorsB: [TN] = scalarsB.map(TN.init(repeating:))
+          let vectorsC: [TN] = scalarsC.map(TN.init(repeating:))
+          let vectorInvocation = KernelInvocation(
+            device: device, library: library, inputA: vectorsA,
+            inputB: vectorsB, expectedC: vectorsC)
+          invocations.append(vectorInvocation)
+        }
         
         appendVectorInvocation(type: T2.self)
         appendVectorInvocation(type: T3.self)
         appendVectorInvocation(type: T4.self)
-        
-        func appendVectorInvocation<TN: SIMD>(type: TN.Type)
-        where TN.Scalar: AutogeneratibleScalar
-        {
-          let vectorsA: [TN]
-        }
       }
     }
   }
+  
+  func encode(queue: any GPUCommandQueue) {
+    
+  }
+  
+  // Must finish the command queue before validating.
+  func validate() {
+    
+  }
 }
+
+// Run Metal and OpenCL commands in parallel, doubling GPU utilization.
+// It's okay to generate the source code twice, if that makes debugging easier.
+let deviceTypes: [any GPUDevice.Type] = [MetalDevice.self, OpenCLDevice.self]
 
 DispatchQueue.concurrentPerform(iterations: 2) { deviceIndex in
   let device = deviceTypes[deviceIndex].init()
   let vectorAddSource = generateSource(body: "c[tid] = a[tid] + b[tid];")
+  
+  let group = KernelInvocationGroup(device: device, body: "c[tid] = a[tid] + b[tid];", generate: { index, A, B, C in
+    A = index
+    B = 2 * index
+    C = A + B
+  })
   
 //  var x: [_KernelInvocation<Any>] = [_KernelInvocation(inputs: [Int]())]
 }
