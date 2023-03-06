@@ -158,8 +158,6 @@ DECLARE_NON_UNIFORM_REDUCTION(product, reduce_mul)
 DECLARE_NON_UNIFORM_REDUCTION(prefix_inclusive_product, scan_inclusive_mul)
 DECLARE_NON_UNIFORM_REDUCTION(prefix_exclusive_product, scan_exclusive_mul)
 
-// TODO: Emulate logical prefix reductions after shuffles are supported.
-
 #undef DECLARE_NON_UNIFORM_REDUCTION
 #undef DECLARE_NON_UNIFORM_F_REDUCTION
 #undef DECLARE_NON_UNIFORM_I_REDUCTION
