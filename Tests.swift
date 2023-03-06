@@ -987,10 +987,13 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     
     // Before cl_khr_subgroup_non_uniform_arithmetic, certain reduction
     // operations were not supported.
-    var preNonUniform: Bool
+    var preNonUniform: Bool = false
     
     // Whether to only use integers.
-    var omitFloat: Bool
+    var omitFloat: Bool = false
+    
+    // Some reductions don't have prefix versions.
+    var omitPrefixReduction: Bool = false
     
     // The number sequence to use.
     var sequence: [Int]
@@ -1002,25 +1005,22 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     var execute: (Int, Int) -> Int
   }
   
+  // TODO: min, max
   // TODO: Wrap this in a loop for add, mul, or, xor, and
   // TODO: Bitwise sequence
   let reductionLoopParams = [
     ReductionParams(
-      scope: .quad, metalName: "sum", openclName: "add",
-      preNonUniform: true, omitFloat: false, sequence: sumSequence4,
-      identity: 0, execute: +),
+      scope: .quad, metalName: "sum", openclName: "add", preNonUniform: true,
+      sequence: sumSequence4, identity: 0, execute: +),
     ReductionParams(
-      scope: .simd, metalName: "sum", openclName: "add",
-      preNonUniform: true, omitFloat: false, sequence: sumSequence32,
-      identity: 0, execute: +),
+      scope: .simd, metalName: "sum", openclName: "add", preNonUniform: true,
+      sequence: sumSequence32, identity: 0, execute: +),
     ReductionParams(
       scope: .quad, metalName: "product", openclName: "mul",
-      preNonUniform: false, omitFloat: false, sequence: productSequence4,
-      identity: 1, execute: *),
+      sequence: productSequence4, identity: 1, execute: *),
     ReductionParams(
       scope: .simd, metalName: "product", openclName: "mul",
-      preNonUniform: false, omitFloat: false, sequence: productSequence32,
-      identity: 1, execute: *),
+      sequence: productSequence32, identity: 1, execute: *),
   ]
   
   for params in reductionLoopParams {
