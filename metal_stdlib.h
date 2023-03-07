@@ -158,6 +158,12 @@ DECLARE_NON_UNIFORM_REDUCTION(product, reduce_mul)
 DECLARE_NON_UNIFORM_REDUCTION(prefix_inclusive_product, scan_inclusive_mul)
 DECLARE_NON_UNIFORM_REDUCTION(prefix_exclusive_product, scan_exclusive_mul)
 
+DECLARE_UNIFORM_REDUCTION(min, reduce_min)
+DECLARE_UNIFORM_REDUCTION(max, reduce_max)
+DECLARE_UNIFORM_I_REDUCTION(and, reduce_and)
+DECLARE_UNIFORM_I_REDUCTION(or, reduce_or)
+DECLARE_UNIFORM_I_REDUCTION(xor, reduce_xor)
+
 #undef DECLARE_NON_UNIFORM_REDUCTION
 #undef DECLARE_NON_UNIFORM_F_REDUCTION
 #undef DECLARE_NON_UNIFORM_I_REDUCTION
