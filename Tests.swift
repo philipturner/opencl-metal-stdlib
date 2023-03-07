@@ -128,8 +128,7 @@ protocol TypeGroupProtocol {
   static var vector4: SIMD4<T>.Type { get }
 }
 
-// Returns a group of shader permutations 3for each type.
-// Use `auto` keyword to make the body type-generic.
+
 let defaultScalarTypeStrings = defaultTypeGroups.map {
   $0.self.scalar.shaderType
 }
@@ -137,6 +136,17 @@ var defaultTypeStrings = defaultScalarTypeStrings
 defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "2" }
 defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "3" }
 defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "4" }
+
+let integerScalarTypeStrings = integerTypeGroups.map {
+  $0.self.scalar.shaderType
+}
+var integerTypeStrings = integerScalarTypeStrings
+integerTypeStrings += integerScalarTypeStrings.map { $0 + "2" }
+integerTypeStrings += integerScalarTypeStrings.map { $0 + "3" }
+integerTypeStrings += integerScalarTypeStrings.map { $0 + "4" }
+
+// Returns a group of shader permutations for each type.
+// Use `auto` keyword to make the body type-generic.
 func generateSource(
   body: String,
   types: [String] = defaultTypeStrings
@@ -185,6 +195,7 @@ func generateSource(
       }
       """)
   }
+  
   return output
 }
 
@@ -793,10 +804,11 @@ struct KernelInvocationGroup {
       _ C: inout Int
     ) -> Void
   ) {
+    let types = omitFloat ? integerTypeStrings : defaultTypeStrings
+    let source = generateSource(body: body, types: types)
+    let library = device.createLibrary(source: source)
     self.deviceType = type(of: device)
     self.body = body
-    let source = generateSource(body: body)
-    let library = device.createLibrary(source: source)
     
     precondition(
       sequenceSize <= 32 && sequenceSize.nonzeroBitCount == 1,
@@ -937,11 +949,21 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   let productSequence4 = [
     7, 1, 5, 2,
   ]
-  // bitwiseSequence
+  let bitwiseSequence4 = [
+    0b0101_0110,
+    0b0110_1110,
+    0b0011_0100,
+    0b0110_0110,
+  ]
   precondition(sumSequence4.reduce(0, +) == 71)
   precondition(sumSequence4.reduce(0, +) <= 127)
   precondition(productSequence4.reduce(1, *) == 70)
   precondition(productSequence4.reduce(1, *) <= 127)
+  precondition(sumSequence4.reduce(127, min) == 4)
+  precondition(sumSequence4.reduce(0, max) == 33)
+  precondition(bitwiseSequence4.reduce(0x7F, &) == 0b0000_0100)
+  precondition(bitwiseSequence4.reduce(0x00, |) == 0b0111_1110)
+  precondition(bitwiseSequence4.reduce(0x00, ^) == 0b0110_1010)
   
   let sumSequence32 = [
     2, 1, 0, 3, 4, 5, 6, 7,
@@ -955,11 +977,25 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     1, 1, 2, 1, 2, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 2,
   ]
-  // bitwiseSequence
+  let bitwiseSequence32 = [
+    0b0101_0110, 0b0110_1110, 0b0011_0100, 0b0110_0110,
+    0b0010_0100, 0b0011_0110, 0b0100_0110, 0b0110_1110,
+    0b0011_0100, 0b0110_0110, 0b0101_0110, 0b0110_1110,
+    0b0111_0110, 0b0011_0100, 0b0011_0100, 0b0101_0110,
+    0b0100_0110, 0b0110_1110, 0b0011_0100, 0b0110_0110,
+    0b0011_0100, 0b0110_0110, 0b0011_0100, 0b0011_0100,
+    0b0010_0100, 0b0011_0110, 0b0101_0110, 0b0110_1110,
+    0b0011_0100, 0b0110_0110, 0b0001_0110, 0b0110_1110,
+  ]
   precondition(sumSequence32.reduce(0, +) == 115)
   precondition(sumSequence32.reduce(0, +) <= 127)
   precondition(productSequence32.reduce(1, *) == 96)
   precondition(productSequence32.reduce(1, *) <= 127)
+  precondition(sumSequence32.reduce(127, min) == 0)
+  precondition(sumSequence32.reduce(0, max) == 8)
+  precondition(bitwiseSequence32.reduce(0x7F, &) == 0b0000_0100)
+  precondition(bitwiseSequence32.reduce(0x00, |) == 0b0111_1110)
+  precondition(bitwiseSequence32.reduce(0x00, ^) == 0b0011_0010)
   
   enum Scope {
     case quad
@@ -1010,17 +1046,68 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   // TODO: Bitwise sequence
   let reductionLoopParams = [
     ReductionParams(
-      scope: .quad, metalName: "sum", openclName: "add", preNonUniform: true,
+      scope: .quad, metalName: "sum", openclName: "add",
+      preNonUniform: true,
       sequence: sumSequence4, identity: 0, execute: +),
-    ReductionParams(
-      scope: .simd, metalName: "sum", openclName: "add", preNonUniform: true,
-      sequence: sumSequence32, identity: 0, execute: +),
     ReductionParams(
       scope: .quad, metalName: "product", openclName: "mul",
       sequence: productSequence4, identity: 1, execute: *),
     ReductionParams(
+      scope: .quad, metalName: "min", openclName: "min",
+      preNonUniform: true, omitPrefixReduction: true,
+      sequence: sumSequence4, identity: 255, execute: min),
+    ReductionParams(
+      scope: .quad, metalName: "max", openclName: "max",
+      preNonUniform: true, omitPrefixReduction: true,
+      sequence: sumSequence4, identity: 0, execute: max),
+    ReductionParams(
+      scope: .quad, metalName: "min", openclName: "min",
+      preNonUniform: true, omitPrefixReduction: true,
+      sequence: sumSequence4, identity: 255, execute: min),
+    ReductionParams(
+      scope: .quad, metalName: "and", openclName: "and",
+      omitFloat: true, omitPrefixReduction: true,
+      sequence: bitwiseSequence4, identity: 0x7F, execute: &),
+    ReductionParams(
+      scope: .quad, metalName: "or", openclName: "or",
+      omitFloat: true, omitPrefixReduction: true,
+      sequence: bitwiseSequence4, identity: 0x00, execute: |),
+    ReductionParams(
+      scope: .quad, metalName: "xor", openclName: "xor",
+      omitFloat: true, omitPrefixReduction: true,
+      sequence: bitwiseSequence4, identity: 0x00, execute: ^),
+    
+    ReductionParams(
+      scope: .simd, metalName: "sum", openclName: "add",
+      preNonUniform: true,
+      sequence: sumSequence32, identity: 0, execute: +),
+    ReductionParams(
       scope: .simd, metalName: "product", openclName: "mul",
       sequence: productSequence32, identity: 1, execute: *),
+    ReductionParams(
+      scope: .simd, metalName: "min", openclName: "min",
+      preNonUniform: true, omitPrefixReduction: true,
+      sequence: sumSequence32, identity: 255, execute: min),
+    ReductionParams(
+      scope: .simd, metalName: "max", openclName: "max",
+      preNonUniform: true, omitPrefixReduction: true,
+      sequence: sumSequence32, identity: 0, execute: max),
+    ReductionParams(
+      scope: .simd, metalName: "min", openclName: "min",
+      preNonUniform: true, omitPrefixReduction: true,
+      sequence: sumSequence32, identity: 255, execute: min),
+    ReductionParams(
+      scope: .simd, metalName: "and", openclName: "and",
+      omitFloat: true, omitPrefixReduction: true,
+      sequence: bitwiseSequence32, identity: 0x7F, execute: &),
+    ReductionParams(
+      scope: .simd, metalName: "or", openclName: "or",
+      omitFloat: true, omitPrefixReduction: true,
+      sequence: bitwiseSequence32, identity: 0x00, execute: |),
+    ReductionParams(
+      scope: .simd, metalName: "xor", openclName: "xor",
+      omitFloat: true, omitPrefixReduction: true,
+      sequence: bitwiseSequence32, identity: 0x00, execute: ^),
   ]
   
   for params in reductionLoopParams {
@@ -1058,12 +1145,17 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       c[tid] = \(baseFunction)(a[tid]\(clusterSize));
       """,
       sequenceSize: params.scope.clusterSize,
+      omitFloat: params.omitFloat,
       generate: { index, A, B, C in
         A = params.sequence[index]
         B = 0
         C = totalResult
       }
     ))
+    
+    if params.omitPrefixReduction {
+      continue
+    }
     
     var partialResult = params.identity
     var exclusiveSequence: [Int] = []
@@ -1089,6 +1181,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       c[tid] = \(exclusiveFunction)(a[tid]\(clusterSize));
       """,
       sequenceSize: params.scope.clusterSize,
+      omitFloat: params.omitFloat,
       generate: { index, A, B, C in
         A = params.sequence[index]
         B = 0
@@ -1112,6 +1205,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       c[tid] = \(inclusiveFunction)(a[tid]\(clusterSize));
       """,
       sequenceSize: params.scope.clusterSize,
+      omitFloat: params.omitFloat,
       generate: { index, A, B, C in
         A = params.sequence[index]
         B = 0
