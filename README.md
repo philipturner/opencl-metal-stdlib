@@ -19,6 +19,7 @@ This repository is a solution to the problem. In Apple's M1 OpenCL driver, the `
 ### What you need to watch out for
 
 - OpenCL does not run on iOS. But SYCL will.
+- The OpenCL Metal Stdlib header may take several seconds to compile, the first time. This could cause a major bottleneck if multiple independent shader programs import it. To work around this, fuse several kernels into a single OpenCL program.
 - Do not use this header on x86 macOS OpenCL backends. Use a conditional compilation macro to only do SIMD reductions on M1. Other vendors have better communication between SIMDs in a threadgroup, so this isn't as much of a concern as with M1.
 - OpenCL provides no direct way to query a thread's lane ID within a subgroup. This is a quirk of how the AIR workaround is implemented. Therefore, the subgroup functions aren't fully OpenCL 2.0 compliant. To work around this, always make threadgroup sizes a multiple of 32, then take `get_local_id(0) % 32`.
 - For the same reasons as the previous note, clustered subgroup operations fail unless cluster size is 4 or 32. The remaining sizes could technically be implemented on Apple 8, which has hardware support ("simd shuffle and fill"). However, it may not be possible to determine the GPU architecture inside OpenCL code. The Metal Standard Library functions for "simd shuffle and fill" are exposed, so just use those if needed.
@@ -49,6 +50,8 @@ Metal (from feature set tables):
 - SIMD-scoped matrix multiply operations - not implemented yet
 - SIMD shift and fill - not implemented yet
 - SIMD-group async copy operations - not implemented yet
+
+TODO: Reduced version of the header that only exposes `float`, `int`, `uint` scalar operations, removes OpenCL clustered reductions (keeps Metal quad binding). Either use a preprocessor flag, code-generating script, or manual synchronization. Incorporate tests for this, document why it's useful.
 
 TODO: Versioned GitHub releases and licensing.
 
