@@ -71,6 +71,8 @@ TODO: Versioned GitHub releases and licensing.
 
 Include the header in shader code, ensuring that it's only included for Apple silicon GPUs.
 
+TODO: This explanation is too short. Expand on it.
+
 ```opencl
 // OpenCL code
 #if __VENDOR_APPLE__
@@ -93,6 +95,28 @@ __kernel void vector_add(__global const int *A, __global const int *B, __global 
      C[i] = A[i] + B[i] + scratch_memory[get_local_id(0) % __VENDOR_SIMD_WIDTH__];
 #endif
 }
+```
+
+To test the header, you can either run the test script from the command line or from Xcode. To run from the command-line, first download `Tests.swift` from this repository. Either place `metal_stdlib.h` in the same directory as the script, or specify an alternative parent folder (see usage below). Right-click the folder containing the script in Finder. Click <b>New Terminal at Folder</b> and enter the following command.
+
+```bash
+swift Tests.swift --headers-directory . --use-subgroup-extended-types
+# Usage: swift Tests.swift [--headers-directory <path>] \
+#        [--use-subgroup-extended-types]
+```
+
+To run from Xcode, create a new Xcode project with the template <b>macOS > Command Line Tool</b>. Replace the Swift file with `Tests.swift` from this repository. Next, copy the header file into the project folder. Add the header to the Xcode target using the following steps:
+- Navigate to `Project Settings` -> `TARGETS` -> This Xcode Project -> `Build Phases` -> `Copy Files`
+- `Destination`: change to `Resources`
+- `Subpath`: change to nothing (erase the contents of the text box)
+- De-select `copy only when installing`
+- Click the `+` button, locate `metal_stdlib.h`, and add it to the build phase.
+
+Finally, click <b>Menu Bar > Product > Run</b> to execute the test. The script will automatically skip the tests for `cl_khr_subgroup_extended_types`. To enable them, search for `usingSubgroupExtendedTypes` using `Ctrl + F`. Replace the default value of `false` with `true`.
+
+```swift
+var usingSubgroupExtendedTypes = false // before
+var usingSubgroupExtendedTypes = true // after
 ```
 
 ## Previous Attempts
