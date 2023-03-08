@@ -8,27 +8,19 @@
 import Metal
 import OpenCL
 
-// Either specify header from command-line or package inside Xcode app bundle.
-//
-// TODO: Transfer these instructions to README
-//
-// Command-Line:
-// swift Tests.swift --headers-directory .
-//
-// Xcode:
-// Project Settings -> TARGETS -> This Xcode Project -> Build Phases
-// -> Copy Files
-// - Destination: change to `Resources`
-// - Subpath: change do nothing
-// - Delect "copy only when installing"
-// - Add "metal_stdlib.h" using the `+` button
+func showUsage() -> Never {
+  fatalError("""
+    Usage: swift Tests.swift [--headers-directory <path>] \
+    [--use-subgroup-extended-types]
+    """)
+}
 
 var headerURL: URL
 if let headersDirectoryFlagIndex = CommandLine.arguments.firstIndex(
   of: "--headers-directory") {
   let headerDirectoryIndex = headersDirectoryFlagIndex + 1
   guard CommandLine.arguments.count > headerDirectoryIndex else {
-    fatalError("Usage: swift Tests.swift [--headers-directory =<path>]")
+    showUsage()
   }
   let headersDirectoryPath = CommandLine.arguments[headerDirectoryIndex]
   let directoryURL = URL(
@@ -46,6 +38,19 @@ if let headersDirectoryFlagIndex = CommandLine.arguments.firstIndex(
 guard let headerData = FileManager.default.contents(
   atPath: headerURL.relativePath) else {
   fatalError("Invalid header path: \(headerURL.relativePath)")
+}
+
+var usingSubgroupExtendedTypes = false
+if CommandLine.arguments.contains("--use-subgroup-extended-types") {
+  usingSubgroupExtendedTypes = true
+}
+
+if CommandLine.arguments.contains(where: { argument in
+  argument.starts(with: "--")
+  && argument != "--headers-directory"
+  && argument != "--use-subgroup-extended-types"
+}) {
+  showUsage()
 }
 
 // Workaround for Swift semantic capture scope issue.
@@ -92,7 +97,8 @@ typealias AutogeneratibleScalar =
 typealias AutogeneratibleVector =
   ShaderRepresentable & SIMD<AutogeneratibleScalar>
 
-let defaultTypeGroups: [any TypeGroupProtocol.Type] = [
+let defaultTypeGroups: [any TypeGroupProtocol.Type] =
+usingSubgroupExtendedTypes ? [
   TypeGroup<Int8>.self,
   TypeGroup<Int16>.self,
   TypeGroup<Int32>.self,
@@ -100,14 +106,22 @@ let defaultTypeGroups: [any TypeGroupProtocol.Type] = [
   TypeGroup<UInt16>.self,
   TypeGroup<UInt32>.self,
   TypeGroup<Float>.self,
+] : [
+  TypeGroup<Int32>.self,
+  TypeGroup<UInt32>.self,
+  TypeGroup<Float>.self,
 ]
 
-let integerTypeGroups: [any TypeGroupProtocol.Type] = [
+let integerTypeGroups: [any TypeGroupProtocol.Type] =
+usingSubgroupExtendedTypes ? [
   TypeGroup<Int8>.self,
   TypeGroup<Int16>.self,
   TypeGroup<Int32>.self,
   TypeGroup<UInt8>.self,
   TypeGroup<UInt16>.self,
+  TypeGroup<UInt32>.self,
+] : [
+  TypeGroup<Int32>.self,
   TypeGroup<UInt32>.self,
 ]
 
@@ -133,17 +147,21 @@ let defaultScalarTypeStrings = defaultTypeGroups.map {
   $0.self.scalar.shaderType
 }
 var defaultTypeStrings = defaultScalarTypeStrings
-defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "2" }
-defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "3" }
-defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "4" }
+if usingSubgroupExtendedTypes {
+  defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "2" }
+  defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "3" }
+  defaultTypeStrings += defaultScalarTypeStrings.map { $0 + "4" }
+}
 
 let integerScalarTypeStrings = integerTypeGroups.map {
   $0.self.scalar.shaderType
 }
 var integerTypeStrings = integerScalarTypeStrings
-integerTypeStrings += integerScalarTypeStrings.map { $0 + "2" }
-integerTypeStrings += integerScalarTypeStrings.map { $0 + "3" }
-integerTypeStrings += integerScalarTypeStrings.map { $0 + "4" }
+if usingSubgroupExtendedTypes {
+  integerTypeStrings += integerScalarTypeStrings.map { $0 + "2" }
+  integerTypeStrings += integerScalarTypeStrings.map { $0 + "3" }
+  integerTypeStrings += integerScalarTypeStrings.map { $0 + "4" }
+}
 
 // Returns a group of shader permutations for each type.
 // Use `auto` keyword to make the body type-generic.
@@ -151,7 +169,16 @@ func generateSource(
   body: String,
   types: [String] = defaultTypeStrings
 ) -> String {
-  var output: String = """
+  var output: String = ""
+  
+  if usingSubgroupExtendedTypes {
+    output += """
+      #define OPENCL_USE_SUBGROUP_EXTENDED_TYPES 1
+      
+      """
+  }
+  
+  output += """
     #if __METAL__
     #include <metal_stdlib>
     using namespace metal;
@@ -168,11 +195,11 @@ func generateSource(
     #define LOCAL __local
     #define BUFFER_BINDING(index)
     #endif
+    
     """
   
   for type in types {
     output.append("""
-      
       KERNEL void vectorOperation_\(type)(
         GLOBAL \(type)* a BUFFER_BINDING(0),
         GLOBAL \(type)* b BUFFER_BINDING(1),
@@ -193,6 +220,7 @@ func generateSource(
       #endif
         \(body)
       }
+      
       """)
   }
   
@@ -397,6 +425,7 @@ class MetalCommandQueue: GPUCommandQueue {
     precondition(
       commandBuffer == nil ||
       commandBuffer?.status == .committed ||
+      commandBuffer?.status == .scheduled ||
       commandBuffer?.status == .completed,
       "Called `startCommandBuffer` before submitting the current command buffer.")
     commandBuffer = commandQueue.makeCommandBuffer()!
@@ -857,9 +886,11 @@ struct KernelInvocationGroup {
           invocations.append(vectorInvocation)
         }
         
-        appendVectorInvocation(type: T2.self)
-        appendVectorInvocation(type: T3.self)
-        appendVectorInvocation(type: T4.self)
+        if usingSubgroupExtendedTypes {
+          appendVectorInvocation(type: T2.self)
+          appendVectorInvocation(type: T3.self)
+          appendVectorInvocation(type: T4.self)
+        }
       }
     }
   }
@@ -907,18 +938,16 @@ let deviceTypes: [any GPUDevice.Type] = [
   OpenCLDevice.self,
 ]
 
-// Thread 1: Metal Stdlib functions form Metal
-// Thread 2: Metal Stdlib functions form OpenCL
+// Thread 1: Metal Stdlib functions from Metal
+// Thread 2: Metal Stdlib functions from OpenCL
 // Thread 3: base OpenCL Stdlib extensions
-// Thread 4: clustered functions
-// Thread 5: legacy OpenCL subgroup functions
+// Thread 4: uniform, clustered OpenCL subgroup functions
 DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   let device = deviceTypes[deviceIndex].init()
   let queue = device.createCommandQueue()
   
   let isExtensionThread = deviceIndex == 2
-  let isClusteredThread = deviceIndex == 3
-  let isHelperThread = deviceIndex == 4
+  let isOtherThread = deviceIndex == 3
   
   var allGroups: [KernelInvocationGroup] = []
   func appendGroup(_ group: KernelInvocationGroup) {
@@ -941,6 +970,26 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     ))
   }
   
+  // Input Data
+  
+  func logical_and(_ x: Int, _ y: Int) -> Int {
+    let x_boolean = x != 0 ? 1 : 0
+    let y_boolean = y != 0 ? 1 : 0
+    return x_boolean & y_boolean
+  }
+  
+  func logical_or(_ x: Int, _ y: Int) -> Int {
+    let x_boolean = x != 0 ? 1 : 0
+    let y_boolean = y != 0 ? 1 : 0
+    return x_boolean | y_boolean
+  }
+  
+  func logical_xor(_ x: Int, _ y: Int) -> Int {
+    let x_boolean = x != 0 ? 1 : 0
+    let y_boolean = y != 0 ? 1 : 0
+    return x_boolean ^ y_boolean
+  }
+  
   // Integer sequences cannot produce something over 127, because that would
   // overflow an 8-bit signed integer.
   let sumSequence4 = [
@@ -955,6 +1004,9 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     0b0011_0100,
     0b0110_0110,
   ]
+  let logicalSequence4 = [
+    93, 0, 1, 9
+  ]
   precondition(sumSequence4.reduce(0, +) == 71)
   precondition(sumSequence4.reduce(0, +) <= 127)
   precondition(productSequence4.reduce(1, *) == 70)
@@ -964,6 +1016,9 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   precondition(bitwiseSequence4.reduce(0x7F, &) == 0b0000_0100)
   precondition(bitwiseSequence4.reduce(0x00, |) == 0b0111_1110)
   precondition(bitwiseSequence4.reduce(0x00, ^) == 0b0110_1010)
+  precondition(logicalSequence4.reduce(1, logical_and) == 0)
+  precondition(logicalSequence4.reduce(0, logical_or) == 1)
+  precondition(logicalSequence4.reduce(0, logical_xor) == 1)
   
   let sumSequence32 = [
     2, 1, 0, 3, 4, 5, 6, 7,
@@ -987,6 +1042,12 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     0b0010_0100, 0b0011_0110, 0b0101_0110, 0b0110_1110,
     0b0011_0100, 0b0110_0110, 0b0001_0110, 0b0110_1110,
   ]
+  let logicalSequence32 = [
+    36,  0, 52,  0, 49, 35, 22, 99,
+    91, 12, 87, 51,  0,  6, 19,  0,
+     0, 17, 84,  3, 63, 55, 57, 15,
+     0, 22, 35, 64, 26, 99,  0, 61,
+  ]
   precondition(sumSequence32.reduce(0, +) == 115)
   precondition(sumSequence32.reduce(0, +) <= 127)
   precondition(productSequence32.reduce(1, *) == 96)
@@ -996,6 +1057,9 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   precondition(bitwiseSequence32.reduce(0x7F, &) == 0b0000_0100)
   precondition(bitwiseSequence32.reduce(0x00, |) == 0b0111_1110)
   precondition(bitwiseSequence32.reduce(0x00, ^) == 0b0011_0010)
+  precondition(logicalSequence32.reduce(1, logical_and) == 0)
+  precondition(logicalSequence32.reduce(0, logical_or) == 1)
+  precondition(logicalSequence32.reduce(0, logical_xor) == 1)
   
   enum Scope {
     case quad
@@ -1016,6 +1080,8 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     }
   }
   
+  // Standard Reductions
+  
   struct ReductionParams {
     var scope: Scope
     var metalName: String
@@ -1034,16 +1100,13 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     // The number sequence to use.
     var sequence: [Int]
     
-    // The mathematical identity of the transformation. 0 for add, 1 for mul.
+    // The number to combine the first operand with.
     var identity: Int
     
     // Combine two operands in sequence.
     var execute: (Int, Int) -> Int
   }
   
-  // TODO: min, max
-  // TODO: Wrap this in a loop for add, mul, or, xor, and
-  // TODO: Bitwise sequence
   let reductionLoopParams = [
     ReductionParams(
       scope: .quad, metalName: "sum", openclName: "add",
@@ -1111,39 +1174,47 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   ]
   
   for params in reductionLoopParams {
-    if params.scope == .quad {
-      if isExtensionThread || isHelperThread {
+    if isExtensionThread && params.scope == .quad {
+      // This will not compile.
+      continue
+    }
+    
+    let totalResult = params.sequence.reduce(params.identity, params.execute)
+    if isOtherThread {
+      let clusteredFunction = "sub_group_clustered_reduce_\(params.openclName)"
+      appendGroup(KernelInvocationGroup(
+        device: device,
+        body: """
+        c[tid] = \(clusteredFunction)(a[tid], \(params.scope.clusterSize));
+        """,
+        sequenceSize: params.scope.clusterSize,
+        omitFloat: params.omitFloat,
+        generate: { index, A, B, C in
+          A = params.sequence[index]
+          B = 0
+          C = totalResult
+        }
+      ))
+      
+      if (params.scope == .quad || !params.preNonUniform) {
         // This will not compile.
         continue
       }
     }
     
-    if isHelperThread && !params.preNonUniform {
-      // Don't encode work you don't need.
-      continue
-    }
-    
-    let totalResult = params.sequence.reduce(params.identity, params.execute)
     var baseFunction: String
-    var clusterSize: String
-    if isHelperThread {
+    if isOtherThread {
       baseFunction = "sub_group_reduce_\(params.openclName)"
-      clusterSize = ""
-    } else if isClusteredThread {
-      baseFunction = "sub_group_clustered_reduce_\(params.openclName)"
-      clusterSize = ", \(params.scope.clusterSize)"
     } else if isExtensionThread {
       baseFunction = "sub_group_non_uniform_reduce_\(params.openclName)"
-      clusterSize = ""
     } else {
       baseFunction = "\(params.scope.metalPrefix)_\(params.metalName)"
-      clusterSize = ""
     }
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = \(baseFunction)(a[tid]\(clusterSize));
-      """,
+    c[tid] = \(baseFunction)(a[tid]);
+    """,
       sequenceSize: params.scope.clusterSize,
       omitFloat: params.omitFloat,
       generate: { index, A, B, C in
@@ -1166,10 +1237,8 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     }
     
     var exclusiveFunction: String
-    if isHelperThread {
+    if isOtherThread {
       exclusiveFunction = "sub_group_scan_exclusive_\(params.openclName)"
-    } else if isClusteredThread {
-      exclusiveFunction = "sub_group_clustered_scan_exclusive_\(params.openclName)"
     } else if isExtensionThread {
       exclusiveFunction = "sub_group_non_uniform_scan_exclusive_\(params.openclName)"
     } else {
@@ -1178,7 +1247,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = \(exclusiveFunction)(a[tid]\(clusterSize));
+      c[tid] = \(exclusiveFunction)(a[tid]);
       """,
       sequenceSize: params.scope.clusterSize,
       omitFloat: params.omitFloat,
@@ -1190,10 +1259,8 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     ))
     
     var inclusiveFunction: String
-    if isHelperThread {
+    if isOtherThread {
       inclusiveFunction = "sub_group_scan_inclusive_\(params.openclName)"
-    } else if isClusteredThread {
-      inclusiveFunction = "sub_group_clustered_scan_inclusive_\(params.openclName)"
     } else if isExtensionThread {
       inclusiveFunction = "sub_group_non_uniform_scan_inclusive_\(params.openclName)"
     } else {
@@ -1202,7 +1269,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = \(inclusiveFunction)(a[tid]\(clusterSize));
+      c[tid] = \(inclusiveFunction)(a[tid]);
       """,
       sequenceSize: params.scope.clusterSize,
       omitFloat: params.omitFloat,
@@ -1214,7 +1281,15 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     ))
   }
   
-  // Other command groups...
+  // Logical Reductions
+  
+  do {
+    // TODO: Manually call into GPU API for this one.
+  }
+  
+  // ballot
+  
+  // shuffles
   
   queue.finishCommands()
   for group in allGroups {
