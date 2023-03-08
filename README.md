@@ -35,7 +35,7 @@ The biggest motivating factor behind this library was inaccessibility of SIMD-sc
 
 OpenCL (from extension specification):
 - cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions)
-- cl_khr_subgroup_extended_types - without 64-bit types
+- cl_khr_subgroup_extended_types (disabled by default) - without 64-bit types
 - cl_khr_subgroup_non_uniform_vote
 - cl_khr_subgroup_ballot
 - cl_khr_subgroup_non_uniform_arithmetic - without prefix form of bitwise/min/max reductions
@@ -51,7 +51,19 @@ Metal (from feature set tables):
 - SIMD shift and fill - not implemented yet
 - SIMD-group async copy operations - not implemented yet
 
-TODO: Reduced version of the header that only exposes `float`, `int`, `uint` scalar operations, removes OpenCL clustered reductions (keeps Metal quad binding). Either use a preprocessor flag, code-generating script, or manual synchronization. Incorporate tests for this, document why it's useful.
+When `cl_khr_subgroup_extended_types` is enabled, the compiler spends significant time processing function definitions for each type. There are 36 possible types with the extension enabled, and 3 without. The compiler often spends several seconds parsing these extra types. None of them are hardware-accelerated on M1, except `char4` and `short2` shuffle, which can be masked as `int` shuffle. For the sake of out of the box performance, the extension and associated Metal Stdlib bindings are not exposed by default. To expose them, set the following compiler flag:
+
+```bash
+# Method 1: pass argument to OpenCL compiler
+-DOPENCL_USE_SUBGROUP_EXTENDED_TYPES=1
+```
+
+```c
+// Method 2: embed into source code
+#define OPENCL_USE_SUBGROUP_EXTENDED_TYPES 1
+#include "metal_stdlib.h"
+#undef OPENCL_USE_SUBGROUP_EXTENDED_TYPES
+```
 
 TODO: Versioned GitHub releases and licensing.
 
