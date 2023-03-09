@@ -1,6 +1,6 @@
 # OpenCL Metal Stdlib
 
-> Note: This is a work in progress; please don't use the header in production code yet.
+> Note: The first release will come soon; please don't use the header in production code yet.
 
 A header for accessing functions from the Metal Standard Library inside OpenCL code.
 
@@ -31,14 +31,14 @@ This repository is a solution to the problem. In Apple's M1 OpenCL driver, the `
 
 ## Features
 
-The biggest motivating factor behind this library was inaccessibility of SIMD-scoped operations. However, this library can expose other Metal functionality in the future.
+The biggest motivating factor behind this header-only library was inaccessibility of SIMD-scoped operations. However, this library can expose other Metal functionality in the future.
 
 OpenCL (from extension specification):
 - cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions)
-- cl_khr_subgroup_extended_types - must be explicitly enabled, lacks 64-bit types
-- cl_khr_subgroup_non_uniform_vote
-- cl_khr_subgroup_ballot - only a small subset of these functions (TODO: document which)
-- cl_khr_subgroup_non_uniform_arithmetic - without prefix form of bitwise/min/max reductions
+- cl_khr_subgroup_extended_types<sup>1</sup> - without 64-bit types
+- cl_khr_subgroup_non_uniform_vote - without `sub_group_non_uniform_all_equal`
+- cl_khr_subgroup_ballot - only `sub_group_non_uniform_broadcast`, `sub_group_broadcast_first`, and `sub_group_ballot`
+- cl_khr_subgroup_non_uniform_arithmetic - without the prefix forms of min, max, bitwise, and logical reductions
 - cl_khr_subgroup_shuffle
 - cl_khr_subgroup_shuffle_relative
 - cl_khr_subgroup_clustered_reduce - with compile-time failure for clusters of 1, 2, 8, or 16
@@ -51,7 +51,7 @@ Metal (from feature set tables):
 - SIMD shift and fill - not implemented yet
 - SIMD-group async copy operations - not implemented yet
 
-When `cl_khr_subgroup_extended_types` is enabled, the compiler spends significant time processing function definitions for each type. There are 36 possible types with the extension enabled, and 3 without. The compiler often spends several seconds parsing these extra types. None of them are hardware-accelerated on M1, except `char4` and `short2` shuffle, which can be masked as `int` shuffle. For the sake of out of the box performance, the extension and associated Metal Stdlib bindings are not exposed by default. To expose them, set the following compiler flag:
+<sup>1</sup>When `cl_khr_subgroup_extended_types` is enabled, the compiler spends significant time processing function definitions for each type. There are 36 possible types with the extension enabled, and 3 without. The compiler often spends several seconds parsing these extra types. None of them are hardware-accelerated on M1, except `char4` and `short2` shuffle, which can be masked as `int` shuffle. For the sake of out of the box performance, the extension and associated Metal Stdlib bindings are not exposed by default. To expose them, set the following compiler flag:
 
 ```bash
 # Method 1: pass argument to OpenCL compiler
@@ -65,13 +65,9 @@ When `cl_khr_subgroup_extended_types` is enabled, the compiler spends significan
 #undef OPENCL_USE_SUBGROUP_EXTENDED_TYPES
 ```
 
-TODO: Versioned GitHub releases and licensing.
-
 ## Usage
 
-Include the header in shader code, ensuring that it's only included for Apple silicon GPUs.
-
-TODO: This explanation is too short. Expand on it.
+To use the header, either include its file path in shader code, or paste the header's contents directly. The header currently only works with Apple's M1 OpenCL backend, so check for the Apple architecture before including it. The example below uses pre-defined macros for each distinct vendor. Your source code may use a different method to activate this code path, as long as it only activates on Apple silicon GPUs.
 
 ```opencl
 // OpenCL code
@@ -97,12 +93,13 @@ __kernel void vector_add(__global const int *A, __global const int *B, __global 
 }
 ```
 
-To test the header, you can either run the test script from the command line or from Xcode. To run from the command-line, first download `Tests.swift` from this repository. Either place `metal_stdlib.h` in the same directory as the script, or specify an alternative parent folder (see usage below). Right-click the folder containing the script in Finder. Click <b>New Terminal at Folder</b> and enter the following command.
+To test the header, you can run the test script either from the command line or from Xcode. To run from the command-line, first download `Tests.swift` from this repository. Either place `metal_stdlib.h` in the same directory as the script, or specify an alternative parent folder (see usage below). Right-click the folder containing the script in Finder. Click <b>New Terminal at Folder</b> and enter the following command.
 
 ```bash
 swift Tests.swift --headers-directory . --use-subgroup-extended-types
-# Usage: swift Tests.swift [--headers-directory <path>] \
-#        [--use-subgroup-extended-types]
+# Usage: swift Tests.swift \
+#   [--header-directory <path>] \
+#   [--use-subgroup-extended-types]
 ```
 
 To run from Xcode, create a new Xcode project with the template <b>macOS > Command Line Tool</b>. Replace the Swift file with `Tests.swift` from this repository. Next, copy the header file into the project folder. Add the header to the Xcode target using the following steps:
@@ -119,6 +116,10 @@ var usingSubgroupExtendedTypes = false // before
 var usingSubgroupExtendedTypes = true // after
 ```
 
-## Previous Attempts
+## Licensing
 
-https://github.com/philipturner/MoltenCL
+If your project needs to depend on a specific version of this repository, check the GitHub releases. The newest release includes `metal_stdlib.h` and a separate ZIP folder containing other source files from this repository. You can obtain the MIT license from the zipped source folder. To refer to this repository, you may use the informal titles "(the) OpenCL Metal Standard Library" or "metal_stdlib.h". Note that Apple owns the trademarks "OpenCL" and "Metal".
+
+## Related Work
+
+https://github.com/philipturner/MoltenCL - a previous attempt to bypass restrictions on using the M1 GPU from OpenCL
