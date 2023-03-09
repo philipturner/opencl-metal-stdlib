@@ -214,7 +214,7 @@ DECLARE_I_REDUCTION_CLUSTERED(xor, reduce_xor)
 #define DECLARE_B_REDUCTION_CLUSTERED(OP) \
 __attribute__((__overloadable__)) \
 int sub_group_non_uniform_reduce_logical_##OP(int predicate) { \
-  return simd_and(select(0, 1, predicate != 0)); \
+return simd_##OP(select(0, 1, predicate != 0)); \
 } \
 \
 __attribute__((__overloadable__)) \
