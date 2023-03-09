@@ -793,7 +793,6 @@ struct KernelInvocation<T>: KernelInvocationProtocol {
                            (expected as! SIMD4<Float>))
         }
         if shouldFail {
-//          print("Element \(i): actual '\(actual)' != expected '\(expected)'")
           return "Element \(i): actual '\(actual)' != expected '\(expected)'"
         }
       }
@@ -1283,16 +1282,223 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   
   // Logical Reductions
   
-  do {
-    // TODO: Manually call into GPU API for this one.
+  var validationHandlers: [() -> Void] = []
+  
+  if isOtherThread {
+    struct LogicalParams {
+      var scope: Scope
+      var name: String
+      
+      // Whether to treat as clustered if SIMD-scoped.
+      var isClustered: Bool = true
+      
+      // The number sequence to use.
+      var sequence: [Int]
+      
+      // The number to combine the first operand with.
+      var identity: Int
+      
+      // Combine two operands in sequence.
+      var execute: (Int, Int) -> Int
+    }
+    
+    let logicalLoopParams = [
+      LogicalParams(
+        scope: .quad, name: "and",
+        sequence: logicalSequence4, identity: 1, execute: logical_and),
+      LogicalParams(
+        scope: .quad, name: "or",
+        sequence: logicalSequence4, identity: 0, execute: logical_or),
+      LogicalParams(
+        scope: .quad, name: "xor",
+        sequence: logicalSequence4, identity: 0, execute: logical_xor),
+      
+      LogicalParams(
+        scope: .simd, name: "and",
+        sequence: logicalSequence32, identity: 1, execute: logical_and),
+      LogicalParams(
+        scope: .simd, name: "or",
+        sequence: logicalSequence32, identity: 0, execute: logical_or),
+      LogicalParams(
+        scope: .simd, name: "xor",
+        sequence: logicalSequence32, identity: 0, execute: logical_xor),
+      
+      LogicalParams(
+        scope: .simd, name: "and", isClustered: false,
+        sequence: logicalSequence32, identity: 1, execute: logical_and),
+      LogicalParams(
+        scope: .simd, name: "or", isClustered: false,
+        sequence: logicalSequence32, identity: 0, execute: logical_or),
+      LogicalParams(
+        scope: .simd, name: "xor", isClustered: false,
+        sequence: logicalSequence32, identity: 0, execute: logical_xor),
+    ]
+    
+    // Create the shader source code.
+    
+    func generateUniqueName(_ params: LogicalParams) -> String {
+      var prefix = params.scope.metalPrefix
+      if params.isClustered {
+        prefix += "_clustered"
+      }
+      return prefix + "_\(params.name)"
+    }
+    
+    func generateBody(_ params: LogicalParams) -> String {
+      var functionName: String
+      if params.isClustered {
+        functionName = "sub_group_clustered_reduce_logical_\(params.name)"
+      } else {
+        functionName = "sub_group_non_uniform_reduce_logical_\(params.name)"
+      }
+      
+      var clusterArgument: String
+      if !params.isClustered {
+        clusterArgument = ""
+      } else if params.scope == .quad {
+        clusterArgument = ", 4"
+      } else {
+        clusterArgument = ", 32"
+      }
+      
+      return "c[tid] = \(functionName)(a[tid]\(clusterArgument));"
+    }
+    
+    func generateSource() -> String {
+      var output: String = ""
+      
+      if usingSubgroupExtendedTypes {
+        output += """
+          #define OPENCL_USE_SUBGROUP_EXTENDED_TYPES 1
+          
+          """
+      }
+      
+      output += """
+        \(headerString!)
+        
+        #define KERNEL __kernel
+        #define GLOBAL __global
+        #define LOCAL __local
+        #define BUFFER_BINDING(index)
+        
+        """
+      
+      for params in logicalLoopParams {
+        let uniqueName = generateUniqueName(params)
+        output.append("""
+          KERNEL void vectorOperation_\(uniqueName)(
+            GLOBAL int* a BUFFER_BINDING(0),
+            GLOBAL int* b BUFFER_BINDING(1),
+            GLOBAL int* c BUFFER_BINDING(2)
+          #if __METAL__
+            ,
+            uint tid [[thread_position_in_grid]],
+            ushort lane_id [[thread_index_in_simdgroup]]
+          ) {
+          #else
+          ) {
+            uint tid = uint(get_global_id(0));
+          
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wunused-variable"
+            ushort lane_id = ushort(get_local_id(0)) % 32;
+            #pragma clang diagnostic pop
+          #endif
+            \(generateBody(params))
+          }
+          
+          """)
+      }
+      
+      return output
+    }
+    
+    let source = generateSource()
+    let library = device.createLibrary(source: source)
+    queue.startCommandBuffer()
+    
+    for params in logicalLoopParams {
+      let uniqueName = generateUniqueName(params)
+      let kernel = library.createKernel(name: "vectorOperation_\(uniqueName)")
+      queue.setKernel(kernel)
+      
+      var finalResult = params.identity
+      precondition(
+        params.scope.clusterSize == params.sequence.count,
+        "Cluster size did not match sequence size.")
+      let sequenceSize = params.scope.clusterSize
+      for i in 0..<sequenceSize {
+        finalResult = params.execute(finalResult, params.sequence[i])
+      }
+      
+      var A: [Int32] = .init(repeating: 0, count: sequenceSize)
+      var B: [Int32] = .init(repeating: 0, count: sequenceSize)
+      var C: [Int32] = .init(repeating: 0, count: sequenceSize)
+      for i in 0..<sequenceSize {
+        A[i] = Int32(params.sequence[i])
+        C[i] = Int32(finalResult)
+      }
+      while A.count < 32 {
+        A.append(contentsOf: A)
+        B.append(contentsOf: B)
+        C.append(contentsOf: C)
+      }
+      
+      let bufferA = device.createBuffer(A)
+      let bufferB = device.createBuffer(B)
+      let bufferC = device.createBuffer(
+        length: C.count * MemoryLayout<Int32>.stride)
+      queue.setBuffer(bufferA, index: 0)
+      queue.setBuffer(bufferB, index: 1)
+      queue.setBuffer(bufferC, index: 2)
+      queue.dispatchThreads(32, threadgroupSize: 32)
+      
+      validationHandlers.append {
+        let expectedC = C
+        let actualC: [Int32] = bufferC.getElements()
+        let length = expectedC.count * MemoryLayout<Int32>.stride
+        if memcmp(actualC, expectedC, length) == 0 {
+          return
+        }
+        
+        var error: String?
+        for i in 0..<expectedC.count {
+          var actual = actualC[i]
+          var expected = expectedC[i]
+          if _slowPath(memcmp(&actual, &expected, 4) != 0) {
+            error = "Element \(i): actual '\(actual)' != expected '\(expected)'"
+            break
+          }
+        }
+        
+        if let error = error {
+          let errorMessage = """
+            
+            Kernel invocation failed.
+            Backend: \(type(of: device))
+            Type: int
+            Source:\n\(generateBody(params))
+            \(error)
+            """
+          print(errorMessage)
+          exit(0)
+        }
+      }
+    }
+    
+    queue.submitCommandBuffer()
   }
   
-  // ballot
+  // TODO: Shuffles
   
-  // shuffles
+  // TODO: Ballot
   
   queue.finishCommands()
   for group in allGroups {
     group.validate()
+  }
+  for handler in validationHandlers {
+    handler()
   }
 }
