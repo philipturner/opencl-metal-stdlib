@@ -490,4 +490,6 @@ uint4 sub_group_ballot(int predicate) {
 #undef DECLARE_REDUCTION_CLUSTERED
 #undef DECLARE_SHUFFLE_CLUSTERED
 
+#undef EXPOSE_BALLOT
+
 #endif /* metal_stdlib_h */
