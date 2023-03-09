@@ -167,7 +167,8 @@ if usingSubgroupExtendedTypes {
 // Use `auto` keyword to make the body type-generic.
 func generateSource(
   body: String,
-  types: [String] = defaultTypeStrings
+  types: [String] = defaultTypeStrings,
+  overrideBType: Bool = false
 ) -> String {
   var output: String = ""
   
@@ -199,10 +200,11 @@ func generateSource(
     """
   
   for type in types {
+    let B_type = overrideBType ? "uint" : type
     output.append("""
       KERNEL void vectorOperation_\(type)(
         GLOBAL \(type)* a BUFFER_BINDING(0),
-        GLOBAL \(type)* b BUFFER_BINDING(1),
+        GLOBAL \(B_type)* b BUFFER_BINDING(1),
         GLOBAL \(type)* c BUFFER_BINDING(2)
       #if __METAL__
         ,
@@ -743,17 +745,23 @@ struct KernelInvocation<T>: KernelInvocationProtocol {
     device: any GPUDevice,
     library: any GPULibrary,
     inputA: Array<T>,
-    inputB: Array<T>,
+    inputB: Array<T>?,
+    alternativeB: Array<UInt32>? = nil,
     expectedC: Array<T>
   ) {
     self.typeName = (T.self as! any ShaderRepresentable.Type).shaderType
     self.kernel = library.createKernel(name: "vectorOperation_\(typeName)")
     
+    let B_count = alternativeB?.count ?? inputB!.count
     precondition(
-      inputA.count == inputB.count && inputB.count == expectedC.count,
+      inputA.count == B_count && B_count == expectedC.count,
       "Inputs had different length.")
     self.bufferA = device.createBuffer(inputA)
-    self.bufferB = device.createBuffer(inputB)
+    if let alternativeB = alternativeB {
+      self.bufferB = device.createBuffer(alternativeB)
+    } else {
+      self.bufferB = device.createBuffer(inputB!)
+    }
     self.bufferC = device.createBuffer(
       length: expectedC.count * MemoryLayout<T>.stride)
     self.expectedC = expectedC
@@ -825,6 +833,7 @@ struct KernelInvocationGroup {
     body: String,
     sequenceSize: Int,
     omitFloat: Bool = false,
+    overrideBType: Bool = false,
     generate: (
       _ index: Int,
       _ A: inout Int,
@@ -833,7 +842,8 @@ struct KernelInvocationGroup {
     ) -> Void
   ) {
     let types = omitFloat ? integerTypeStrings : defaultTypeStrings
-    let source = generateSource(body: body, types: types)
+    let source = generateSource(
+      body: body, types: types, overrideBType: overrideBType)
     let library = device.createLibrary(source: source)
     self.deviceType = type(of: device)
     self.body = body
@@ -851,6 +861,10 @@ struct KernelInvocationGroup {
       A.append(contentsOf: A)
       B.append(contentsOf: B)
       C.append(contentsOf: C)
+    }
+    var alternativeB: [UInt32]?
+    if overrideBType {
+      alternativeB = B.map(UInt32.init)
     }
     
     let typeGroups = omitFloat ? integerTypeGroups : defaultTypeGroups
@@ -870,7 +884,7 @@ struct KernelInvocationGroup {
         let scalarsC: [T1] = C.map { T1(exactly: $0)! }
         let scalarInvocation = KernelInvocation(
           device: device, library: library, inputA: scalarsA,
-          inputB: scalarsB, expectedC: scalarsC)
+          inputB: scalarsB, alternativeB: alternativeB, expectedC: scalarsC)
         invocations.append(scalarInvocation)
         
         func appendVectorInvocation<TN: SIMD>(type: TN.Type)
@@ -881,7 +895,7 @@ struct KernelInvocationGroup {
           let vectorsC: [TN] = scalarsC.map(TN.init(repeating:))
           let vectorInvocation = KernelInvocation(
             device: device, library: library, inputA: vectorsA,
-            inputB: vectorsB, expectedC: vectorsC)
+            inputB: vectorsB, alternativeB: alternativeB, expectedC: vectorsC)
           invocations.append(vectorInvocation)
         }
         
@@ -940,7 +954,8 @@ let deviceTypes: [any GPUDevice.Type] = [
 // Thread 1: Metal Stdlib functions from Metal
 // Thread 2: Metal Stdlib functions from OpenCL
 // Thread 3: base OpenCL Stdlib extensions
-// Thread 4: uniform, clustered OpenCL subgroup functions
+// Thread 4: (non)uniform, clustered OpenCL subgroup functions
+// - Thread 3 takes uniform or non-uniform, whichever has more.
 DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   let device = deviceTypes[deviceIndex].init()
   let queue = device.createCommandQueue()
@@ -989,6 +1004,93 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     return x_boolean ^ y_boolean
   }
   
+  // Identity of `broadcast_first` sequence is the first element.
+  func broadcast_first(_ x: Int, _ y: Int) -> Int {
+    return x
+  }
+  
+  func shuffle(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    let index = indexSequence![lane_id]
+    return sequence[index]
+  }
+  
+  func shuffle_xor(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    let index = lane_id ^ delta
+    return sequence[index]
+  }
+  
+  func shuffle_up(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    let index: Int
+    if lane_id < delta {
+      index = lane_id
+    } else {
+      index = lane_id - delta
+    }
+    return sequence[index]
+  }
+  
+  func shuffle_down(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    let index: Int
+    if lane_id >= sequence.count - delta {
+      index = lane_id
+    } else {
+      index = lane_id + delta
+    }
+    return sequence[index]
+  }
+  
+  func shuffle_rotate_up(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    var index = lane_id - delta
+    index &= sequence.count - 1
+    return sequence[index]
+  }
+  
+  func shuffle_rotate_down(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    var index = lane_id + delta
+    index &= sequence.count - 1
+    return sequence[index]
+  }
+  
+  func broadcast(
+    _ sequence: [Int],
+    _ indexSequence: [Int]?,
+    _ delta: Int,
+    _ lane_id: Int
+  ) -> Int {
+    let index = delta
+    return sequence[index]
+  }
+  
   // Integer sequences cannot produce something over 127, because that would
   // overflow an 8-bit signed integer.
   let sumSequence4 = [
@@ -1006,6 +1108,9 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   let logicalSequence4 = [
     93, 0, 1, 9
   ]
+  let shuffleSequence4 = [
+    126, 0, 5, 4
+  ]
   precondition(sumSequence4.reduce(0, +) == 71)
   precondition(sumSequence4.reduce(0, +) <= 127)
   precondition(productSequence4.reduce(1, *) == 70)
@@ -1018,6 +1123,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   precondition(logicalSequence4.reduce(1, logical_and) == 0)
   precondition(logicalSequence4.reduce(0, logical_or) == 1)
   precondition(logicalSequence4.reduce(0, logical_xor) == 1)
+  precondition(shuffleSequence4.reduce(126, broadcast_first) == 126)
   
   let sumSequence32 = [
     2, 1, 0, 3, 4, 5, 6, 7,
@@ -1047,6 +1153,12 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
      0, 17, 84,  3, 63, 55, 57, 15,
      0, 22, 35, 64, 26, 99,  0, 61,
   ]
+  let shuffleSequence32 = [
+   126,  0, 52,  0, 49, 35, 22, 99,
+    91, 12, 87, 51,  0,  6, 19,  0,
+     0, 17, 84,  3, 63, 55, 57, 15,
+     0, 22, 35, 64, 26, 99,  0, 61,
+  ]
   precondition(sumSequence32.reduce(0, +) == 115)
   precondition(sumSequence32.reduce(0, +) <= 127)
   precondition(productSequence32.reduce(1, *) == 96)
@@ -1059,6 +1171,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   precondition(logicalSequence32.reduce(1, logical_and) == 0)
   precondition(logicalSequence32.reduce(0, logical_or) == 1)
   precondition(logicalSequence32.reduce(0, logical_xor) == 1)
+  precondition(shuffleSequence32.reduce(126, broadcast_first) == 126)
   
   enum Scope {
     case quad
@@ -1089,6 +1202,9 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     // Before cl_khr_subgroup_non_uniform_arithmetic, certain reduction
     // operations were not supported.
     var preNonUniform: Bool = false
+    
+    // Skip non-uniform and clustered.
+    var isBroadcastFirst: Bool = false
     
     // Whether to only use integers.
     var omitFloat: Bool = false
@@ -1138,6 +1254,10 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       scope: .quad, metalName: "xor", openclName: "xor",
       omitFloat: true, omitPrefixReduction: true,
       sequence: bitwiseSequence4, identity: 0x00, execute: ^),
+    ReductionParams(
+      scope: .quad, metalName: "broadcast_first", openclName: "broadcast_first",
+      isBroadcastFirst: true, omitPrefixReduction: true,
+      sequence: shuffleSequence4, identity: 126, execute: broadcast_first),
     
     ReductionParams(
       scope: .simd, metalName: "sum", openclName: "add",
@@ -1170,30 +1290,40 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       scope: .simd, metalName: "xor", openclName: "xor",
       omitFloat: true, omitPrefixReduction: true,
       sequence: bitwiseSequence32, identity: 0x00, execute: ^),
+    ReductionParams(
+      scope: .simd, metalName: "broadcast_first", openclName: "broadcast_first",
+      isBroadcastFirst: true, omitPrefixReduction: true,
+      sequence: shuffleSequence32, identity: 126, execute: broadcast_first),
   ]
   
+  // For this loop, non-uniform has more.
   for params in reductionLoopParams {
-    if isExtensionThread && params.scope == .quad {
-      // This will not compile.
-      continue
+    if isExtensionThread {
+      if (params.scope == .quad || params.isBroadcastFirst) {
+        // This will not compile.
+        continue
+      }
     }
     
     let totalResult = params.sequence.reduce(params.identity, params.execute)
     if isOtherThread {
-      let clusteredFunction = "sub_group_clustered_reduce_\(params.openclName)"
-      appendGroup(KernelInvocationGroup(
-        device: device,
-        body: """
-        c[tid] = \(clusteredFunction)(a[tid], \(params.scope.clusterSize));
-        """,
-        sequenceSize: params.scope.clusterSize,
-        omitFloat: params.omitFloat,
-        generate: { index, A, B, C in
-          A = params.sequence[index]
-          B = 0
-          C = totalResult
-        }
-      ))
+      if !params.isBroadcastFirst {
+        let clusteredFunction =
+          "sub_group_clustered_reduce_\(params.openclName)"
+        appendGroup(KernelInvocationGroup(
+          device: device,
+          body: """
+            c[tid] = \(clusteredFunction)(a[tid], \(params.scope.clusterSize));
+            """,
+          sequenceSize: params.scope.clusterSize,
+          omitFloat: params.omitFloat,
+          generate: { index, A, B, C in
+            A = params.sequence[index]
+            B = 0
+            C = totalResult
+          }
+        ))
+      }
       
       if (params.scope == .quad || !params.preNonUniform) {
         // This will not compile.
@@ -1203,7 +1333,11 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     
     var baseFunction: String
     if isOtherThread {
-      baseFunction = "sub_group_reduce_\(params.openclName)"
+      var reduce = "reduce_"
+      if params.isBroadcastFirst {
+        reduce = ""
+      }
+      baseFunction = "sub_group_\(reduce)\(params.openclName)"
     } else if isExtensionThread {
       baseFunction = "sub_group_non_uniform_reduce_\(params.openclName)"
     } else {
@@ -1212,8 +1346,8 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-    c[tid] = \(baseFunction)(a[tid]);
-    """,
+        c[tid] = \(baseFunction)(a[tid]);
+        """,
       sequenceSize: params.scope.clusterSize,
       omitFloat: params.omitFloat,
       generate: { index, A, B, C in
@@ -1237,17 +1371,20 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     
     var exclusiveFunction: String
     if isOtherThread {
-      exclusiveFunction = "sub_group_scan_exclusive_\(params.openclName)"
+      exclusiveFunction =
+        "sub_group_scan_exclusive_\(params.openclName)"
     } else if isExtensionThread {
-      exclusiveFunction = "sub_group_non_uniform_scan_exclusive_\(params.openclName)"
+      exclusiveFunction =
+        "sub_group_non_uniform_scan_exclusive_\(params.openclName)"
     } else {
-      exclusiveFunction = "\(params.scope.metalPrefix)_prefix_exclusive_\(params.metalName)"
+      exclusiveFunction =
+        "\(params.scope.metalPrefix)_prefix_exclusive_\(params.metalName)"
     }
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = \(exclusiveFunction)(a[tid]);
-      """,
+        c[tid] = \(exclusiveFunction)(a[tid]);
+        """,
       sequenceSize: params.scope.clusterSize,
       omitFloat: params.omitFloat,
       generate: { index, A, B, C in
@@ -1259,17 +1396,20 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     
     var inclusiveFunction: String
     if isOtherThread {
-      inclusiveFunction = "sub_group_scan_inclusive_\(params.openclName)"
+      inclusiveFunction =
+        "sub_group_scan_inclusive_\(params.openclName)"
     } else if isExtensionThread {
-      inclusiveFunction = "sub_group_non_uniform_scan_inclusive_\(params.openclName)"
+      inclusiveFunction =
+        "sub_group_non_uniform_scan_inclusive_\(params.openclName)"
     } else {
-      inclusiveFunction = "\(params.scope.metalPrefix)_prefix_inclusive_\(params.metalName)"
+      inclusiveFunction =
+        "\(params.scope.metalPrefix)_prefix_inclusive_\(params.metalName)"
     }
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
-      c[tid] = \(inclusiveFunction)(a[tid]);
-      """,
+        c[tid] = \(inclusiveFunction)(a[tid]);
+        """,
       sequenceSize: params.scope.clusterSize,
       omitFloat: params.omitFloat,
       generate: { index, A, B, C in
@@ -1322,6 +1462,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       LogicalParams(
         scope: .simd, name: "xor",
         sequence: logicalSequence32, identity: 0, execute: logical_xor),
+      // Bridge OpenCL version of `simd_all`, `simd_any` here.
       
       LogicalParams(
         scope: .simd, name: "and", isClustered: false,
@@ -1490,9 +1631,154 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     queue.submitCommandBuffer()
   }
   
-  // TODO: Shuffles
+  // Shuffles
   
-  // TODO: Ballot
+  struct ShuffleParams {
+    var scope: Scope
+    var metalName: String
+    var openclName: String
+    
+    // Whether the SIMD-scoped version has an equivalent in OpenCL.
+    var includeOpenCL: Bool = true
+    
+    // Whether this operation has a non-uniform version.
+    var includeNonUniform: Bool = false
+    
+    // Whether this operation has a clustered version.
+    var includeClustered: Bool = false
+    
+    // Presence of this property indicates it's SHUFFLE_RANDOM32.
+    var indexSequence: [Int]? = nil
+    
+    // The number sequence to use.
+    var sequence: [Int]
+    
+    // The delta or lane_id that must remain constant. Ignored if unused.
+    var delta: Int
+    
+    // Find the result for a particular lane.
+    var execute: (
+      _ sequence: [Int],
+      _ indexSequence: [Int]?,
+      _ delta: Int,
+      _ lane_id: Int
+    ) -> Int
+  }
+  
+  let shuffleLoopParams = [
+    ShuffleParams(
+      scope: .quad, metalName: "shuffle", openclName: "shuffle",
+      indexSequence: [3, 0, 2, 1],
+      sequence: shuffleSequence4, delta: 3, execute: shuffle),
+    ShuffleParams(
+      scope: .quad, metalName: "shuffle_xor", openclName: "shuffle_xor",
+      sequence: shuffleSequence4, delta: 0b10, execute: shuffle_xor),
+    ShuffleParams(
+      scope: .quad, metalName: "shuffle_up", openclName: "shuffle_up",
+      sequence: shuffleSequence4, delta: 3, execute: shuffle_up),
+    ShuffleParams(
+      scope: .quad, metalName: "shuffle_down", openclName: "shuffle_down",
+      sequence: shuffleSequence4, delta: 3, execute: shuffle_down),
+    ShuffleParams(
+      scope: .quad, metalName: "shuffle_rotate_up", openclName: "",
+      includeOpenCL: false,
+      sequence: shuffleSequence4, delta: 3, execute: shuffle_rotate_up),
+    ShuffleParams(
+      scope: .quad, metalName: "shuffle_rotate_down", openclName: "rotate",
+      includeClustered: true,
+      sequence: shuffleSequence4, delta: 3, execute: shuffle_rotate_down),
+    ShuffleParams(
+      scope: .quad, metalName: "broadcast", openclName: "broadcast",
+      includeNonUniform: true,
+      sequence: shuffleSequence4, delta: 3, execute: broadcast),
+    
+    ShuffleParams(
+      scope: .simd, metalName: "shuffle", openclName: "shuffle",
+      indexSequence: [
+         6,  0,  3, 15, 19, 28, 13,  9,
+        20, 13, 16, 14, 28,  5,  3,  4,
+        10, 11, 25,  1, 28, 17, 29,  3,
+        24,  7, 22, 16,  0,  6,  2, 16
+      ],
+      sequence: shuffleSequence32, delta: 9, execute: shuffle),
+    ShuffleParams(
+      scope: .simd, metalName: "shuffle_xor", openclName: "shuffle_xor",
+      sequence: shuffleSequence32, delta: 0b10010, execute: shuffle_xor),
+    ShuffleParams(
+      scope: .simd, metalName: "shuffle_up", openclName: "shuffle_up",
+      sequence: shuffleSequence32, delta: 9, execute: shuffle_up),
+    ShuffleParams(
+      scope: .simd, metalName: "shuffle_down", openclName: "shuffle_down",
+      sequence: shuffleSequence32, delta: 9, execute: shuffle_down),
+    ShuffleParams(
+      scope: .simd, metalName: "shuffle_rotate_up", openclName: "",
+      includeOpenCL: false,
+      sequence: shuffleSequence32, delta: 9, execute: shuffle_rotate_up),
+    ShuffleParams(
+      scope: .simd, metalName: "shuffle_rotate_down", openclName: "rotate",
+      includeClustered: true,
+      sequence: shuffleSequence32, delta: 9, execute: shuffle_rotate_down),
+    ShuffleParams(
+      scope: .simd, metalName: "broadcast", openclName: "broadcast",
+      includeNonUniform: true,
+      sequence: shuffleSequence32, delta: 9, execute: broadcast),
+  ]
+  
+  // For this loop, uniform has more.
+  for params in shuffleLoopParams {
+    var functionNames: [String] = []
+    var clusterArgs: [String] = []
+    if isOtherThread {
+      guard params.includeOpenCL else { continue }
+      if params.scope == .simd && params.includeNonUniform {
+        functionNames.append("sub_group_non_uniform_\(params.openclName)")
+        clusterArgs.append("")
+      }
+      if params.includeClustered {
+        functionNames.append("sub_group_clustered_\(params.openclName)")
+        clusterArgs.append(", \(params.scope.clusterSize)")
+      }
+    } else if isExtensionThread {
+      guard params.includeOpenCL else { continue }
+      if params.scope == .simd {
+        functionNames.append("sub_group_\(params.openclName)")
+        clusterArgs.append("")
+      }
+    } else {
+      functionNames.append("\(params.scope.metalPrefix)_\(params.metalName)")
+      clusterArgs.append("")
+    }
+    
+    var deltaArg: String
+    if params.indexSequence != nil {
+      if params.scope == .quad {
+        deltaArg = ", b[tid % 4]"
+      } else {
+        deltaArg = ", b[tid]"
+      }
+    } else {
+      deltaArg = ", \(params.delta)"
+    }
+    
+    for (functionName, clusterArg) in zip(functionNames, clusterArgs) {
+      appendGroup(KernelInvocationGroup(
+        device: device,
+        body: """
+          c[tid] = \(functionName)(a[tid]\(deltaArg)\(clusterArg));
+          """,
+        sequenceSize: params.scope.clusterSize,
+        overrideBType: true,
+        generate: { index, A, B, C in
+          A = params.sequence[index]
+          B = params.indexSequence?[index] ?? 0
+          C = params.execute(
+            params.sequence, params.indexSequence, params.delta, index)
+        }
+      ))
+    }
+  }
+  
+  // TODO: Ballot, in the "other" thread, fused with logical/boolean operations
   
   queue.finishCommands()
   for group in allGroups {
