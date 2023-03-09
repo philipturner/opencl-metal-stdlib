@@ -1173,7 +1173,7 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
   precondition(logicalSequence32.reduce(0, logical_xor) == 1)
   precondition(shuffleSequence32.reduce(126, broadcast_first) == 126)
   
-  enum Scope {
+  enum Scope: CaseIterable {
     case quad
     case simd
     
@@ -1420,17 +1420,29 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     ))
   }
   
-  // Logical Reductions
+  // Logical Reductions + Ballot Operations
   
   var validationHandlers: [() -> Void] = []
   
-  if isOtherThread {
+  if deviceIndex == 0 || deviceIndex == 1 || isOtherThread {
     struct LogicalParams {
       var scope: Scope
       var name: String
       
       // Whether to treat as clustered if SIMD-scoped.
-      var isClustered: Bool = true
+      var isClustered: Bool = false
+      
+      // Whether this is a ballot operation.
+      var isBallot: Bool = false
+      
+      // Whether to enter nothing as the input.
+      var skipFirstArgument: Bool = false
+      
+      // Whether the output is a vector in OpenCL.
+      var compressOutput: Bool = false
+      
+      // Whether the function only exists in Metal.
+      var isMetal: Bool = false
       
       // The number sequence to use.
       var sequence: [Int]
@@ -1442,38 +1454,98 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       var execute: (Int, Int) -> Int
     }
     
-    let logicalLoopParams = [
-      LogicalParams(
-        scope: .quad, name: "and",
-        sequence: logicalSequence4, identity: 1, execute: logical_and),
-      LogicalParams(
-        scope: .quad, name: "or",
-        sequence: logicalSequence4, identity: 0, execute: logical_or),
-      LogicalParams(
-        scope: .quad, name: "xor",
-        sequence: logicalSequence4, identity: 0, execute: logical_xor),
-      
-      LogicalParams(
-        scope: .simd, name: "and",
-        sequence: logicalSequence32, identity: 1, execute: logical_and),
-      LogicalParams(
-        scope: .simd, name: "or",
-        sequence: logicalSequence32, identity: 0, execute: logical_or),
-      LogicalParams(
-        scope: .simd, name: "xor",
-        sequence: logicalSequence32, identity: 0, execute: logical_xor),
-      // Bridge OpenCL version of `simd_all`, `simd_any` here.
-      
-      LogicalParams(
-        scope: .simd, name: "and", isClustered: false,
-        sequence: logicalSequence32, identity: 1, execute: logical_and),
-      LogicalParams(
-        scope: .simd, name: "or", isClustered: false,
-        sequence: logicalSequence32, identity: 0, execute: logical_or),
-      LogicalParams(
-        scope: .simd, name: "xor", isClustered: false,
-        sequence: logicalSequence32, identity: 0, execute: logical_xor),
-    ]
+    var logicalLoopParams: [LogicalParams]
+    
+    if isOtherThread {
+      logicalLoopParams = [
+        LogicalParams(
+          scope: .quad, name: "and", isClustered: true,
+          sequence: logicalSequence4, identity: 1, execute: logical_and),
+        LogicalParams(
+          scope: .quad, name: "or", isClustered: true,
+          sequence: logicalSequence4, identity: 0, execute: logical_or),
+        LogicalParams(
+          scope: .quad, name: "xor", isClustered: true,
+          sequence: logicalSequence4, identity: 0, execute: logical_xor),
+        
+        LogicalParams(
+          scope: .simd, name: "and", isClustered: true,
+          sequence: logicalSequence32, identity: 1, execute: logical_and),
+        LogicalParams(
+          scope: .simd, name: "or", isClustered: true,
+          sequence: logicalSequence32, identity: 0, execute: logical_or),
+        LogicalParams(
+          scope: .simd, name: "xor", isClustered: true,
+          sequence: logicalSequence32, identity: 0, execute: logical_xor),
+        
+        LogicalParams(
+          scope: .simd, name: "and",
+          sequence: logicalSequence32, identity: 1, execute: logical_and),
+        LogicalParams(
+          scope: .simd, name: "or",
+          sequence: logicalSequence32, identity: 0, execute: logical_or),
+        LogicalParams(
+          scope: .simd, name: "xor",
+          sequence: logicalSequence32, identity: 0, execute: logical_xor),
+        
+        LogicalParams(
+          scope: .simd, name: "elect", isBallot: true, skipFirstArgument: true,
+          sequence: logicalSequence32, identity: 2, execute: { prev, input in
+            return max(prev - 1, 0)
+          }),
+        LogicalParams(
+          scope: .simd, name: "all", isBallot: true,
+          sequence: logicalSequence32, identity: 1, execute: logical_and),
+        LogicalParams(
+          scope: .simd, name: "any",  isBallot: true,
+          sequence: logicalSequence32, identity: 0, execute: logical_or),
+        LogicalParams(
+          scope: .simd, name: "non_uniform_all", isBallot: true,
+          sequence: logicalSequence32, identity: 1, execute: logical_and),
+        LogicalParams(
+          scope: .simd, name: "non_uniform_any",  isBallot: true,
+          sequence: logicalSequence32, identity: 0, execute: logical_or),
+        LogicalParams(
+          scope: .simd, name: "ballot", isBallot: true, compressOutput: true,
+          sequence: logicalSequence32, identity: 0, execute: { prev, input in
+            let flag = input != 0 ? (1 << 31) : 0
+            return prev >> 1 | flag
+          }),
+      ]
+    } else {
+      logicalLoopParams = []
+      for scope in Scope.allCases {
+        let sequence = scope == .quad ? logicalSequence4 : logicalSequence32
+        let shiftAmount = scope == .quad ? 3 : 31
+        logicalLoopParams += [
+          LogicalParams(
+            scope: scope, name: "is_first",
+            skipFirstArgument: true, isMetal: true,
+            sequence: sequence, identity: 2, execute: { prev, input in
+              return max(prev - 1, 0)
+            }
+          ),
+          LogicalParams(
+            scope: scope, name: "all", isMetal: true,
+            sequence: sequence, identity: 1, execute: logical_and),
+          LogicalParams(
+            scope: scope, name: "any", isMetal: true,
+            sequence: sequence, identity: 0, execute: logical_or),
+          LogicalParams(
+            scope: scope, name: "ballot", compressOutput: true, isMetal: true,
+            sequence: sequence, identity: 0, execute: { prev, input in
+              let flag = input != 0 ? (1 << shiftAmount) : 0
+              return prev >> 1 | flag
+            }),
+          LogicalParams(
+            scope: scope, name: "active_threads_mask",
+            skipFirstArgument: true, compressOutput: true, isMetal: true,
+            sequence: sequence, identity: 0, execute: { prev, input in
+              return Int(1 << (shiftAmount + 1)) - 1
+            }),
+        ]
+      }
+    }
     
     // Create the shader source code.
     
@@ -1487,22 +1559,45 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     
     func generateBody(_ params: LogicalParams) -> String {
       var functionName: String
-      if params.isClustered {
+      if params.isMetal {
+        functionName = "\(params.scope)_\(params.name)"
+      } else if params.isBallot {
+        functionName = "sub_group_\(params.name)"
+      } else if params.isClustered {
         functionName = "sub_group_clustered_reduce_logical_\(params.name)"
       } else {
         functionName = "sub_group_non_uniform_reduce_logical_\(params.name)"
       }
       
       var clusterArgument: String
-      if !params.isClustered {
-        clusterArgument = ""
-      } else if params.scope == .quad {
-        clusterArgument = ", 4"
+      if params.isClustered {
+        clusterArgument = ", \(params.scope.clusterSize)"
       } else {
-        clusterArgument = ", 32"
+        clusterArgument = ""
       }
       
-      return "c[tid] = \(functionName)(a[tid]\(clusterArgument));"
+      var firstArgument: String
+      if params.skipFirstArgument {
+        firstArgument = ""
+      } else {
+        // Should be implicitly casted from `int` to `bool` in Metal.
+        firstArgument = "a[tid]"
+      }
+      
+      // Should be implicitly casted from `bool` to `int` in Metal.
+      let functionBody = "\(functionName)(\(firstArgument)\(clusterArgument))"
+      if params.compressOutput && params.isMetal {
+        switch params.scope {
+        case .quad:
+          return "c[tid] = ushort(\(functionBody));"
+        case .simd:
+          return "c[tid] = ulong(\(functionBody));"
+        }
+      } else if params.compressOutput {
+        return "c[tid] = \(functionBody).x;"
+      } else {
+        return "c[tid] = \(functionBody);"
+      }
     }
     
     func generateSource() -> String {
@@ -1516,16 +1611,27 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       }
       
       output += """
+        #if __METAL__
+        #include <metal_stdlib>
+        using namespace metal;
+        
+        #define KERNEL kernel
+        #define GLOBAL device
+        #define LOCAL threadgroup
+        #define BUFFER_BINDING(index) [[buffer(index)]]
+        #else
         \(headerString!)
         
         #define KERNEL __kernel
         #define GLOBAL __global
         #define LOCAL __local
         #define BUFFER_BINDING(index)
+        #endif
         
         """
       
-      for params in logicalLoopParams {
+      let acceptMetal = deviceIndex == 0 || deviceIndex == 1
+      for params in logicalLoopParams where acceptMetal == params.isMetal {
         let uniqueName = generateUniqueName(params)
         output.append("""
           KERNEL void vectorOperation_\(uniqueName)(
@@ -1559,7 +1665,8 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     let library = device.createLibrary(source: source)
     queue.startCommandBuffer()
     
-    for params in logicalLoopParams {
+    let acceptMetal = deviceIndex == 0 || deviceIndex == 1
+    for params in logicalLoopParams where acceptMetal == params.isMetal {
       let uniqueName = generateUniqueName(params)
       let kernel = library.createKernel(name: "vectorOperation_\(uniqueName)")
       queue.setKernel(kernel)
@@ -1578,7 +1685,13 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       var C: [Int32] = .init(repeating: 0, count: sequenceSize)
       for i in 0..<sequenceSize {
         A[i] = Int32(params.sequence[i])
-        C[i] = Int32(finalResult)
+        C[i] = Int32(bitPattern: UInt32(finalResult))
+      }
+      if params.name == "elect" || params.name == "is_first" {
+        C[0] = 1
+        for i in 1..<C.count {
+          precondition(C[i] == 0, "Incorrect expected output for 'elect'.")
+        }
       }
       while A.count < 32 {
         A.append(contentsOf: A)
@@ -1777,8 +1890,6 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       ))
     }
   }
-  
-  // TODO: Ballot, in the "other" thread, fused with logical/boolean operations
   
   queue.finishCommands()
   for group in allGroups {
