@@ -9,17 +9,39 @@ import Metal
 import OpenCL
 
 func showUsage() -> Never {
-  fatalError("""
-    Usage: swift Tests.swift [--headers-directory <path>] \
+  print("""
+    Usage: swift Tests.swift [--header-directory <path>] \
     [--use-subgroup-extended-types]
     """)
+  exit(0)
+}
+
+func silentError(_ message: String) -> Never {
+  print(message)
+  print("If running from command-line, did you specify '[--header-directory <path>]'?")
+  exit(0)
+}
+
+var usingSubgroupExtendedTypes = false
+if CommandLine.arguments.contains("--use-subgroup-extended-types") {
+  usingSubgroupExtendedTypes = true
+}
+
+if let badArgument = CommandLine.arguments.first(where: { argument in
+  argument.starts(with: "--")
+  && argument != "--header-directory"
+  && argument != "--use-subgroup-extended-types"
+}) {
+  print("Invalid argument '\(badArgument)'.")
+  showUsage()
 }
 
 var headerURL: URL
 if let headersDirectoryFlagIndex = CommandLine.arguments.firstIndex(
-  of: "--headers-directory") {
+  of: "--header-directory") {
   let headerDirectoryIndex = headersDirectoryFlagIndex + 1
   guard CommandLine.arguments.count > headerDirectoryIndex else {
+    print("Did not specify value of '--header-directory'.")
     showUsage()
   }
   let headersDirectoryPath = CommandLine.arguments[headerDirectoryIndex]
@@ -30,34 +52,21 @@ if let headersDirectoryFlagIndex = CommandLine.arguments.firstIndex(
 } else {
   guard let _headerURL = Bundle.main.url(
     forResource: "metal_stdlib", withExtension: "h") else {
-    fatalError("Could not locate header in Xcode app bundle.")
+    silentError("Could not locate header in Xcode app bundle.")
   }
   headerURL = _headerURL
 }
 
 guard let headerData = FileManager.default.contents(
   atPath: headerURL.relativePath) else {
-  fatalError("Invalid header path: \(headerURL.relativePath)")
-}
-
-var usingSubgroupExtendedTypes = false
-if CommandLine.arguments.contains("--use-subgroup-extended-types") {
-  usingSubgroupExtendedTypes = true
-}
-
-if CommandLine.arguments.contains(where: { argument in
-  argument.starts(with: "--")
-  && argument != "--headers-directory"
-  && argument != "--use-subgroup-extended-types"
-}) {
-  showUsage()
+  silentError("Invalid header path: \(headerURL.relativePath)")
 }
 
 // Workaround for Swift semantic capture scope issue.
 var headerString: String?
 headerString = String(data: headerData, encoding: .utf8)
 guard headerString != nil else {
-  fatalError("Malformatted header: \(headerURL.relativePath)")
+  silentError("Malformatted header: \(headerURL.relativePath)")
 }
 
 protocol ShaderRepresentable {
@@ -1899,3 +1908,5 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     handler()
   }
 }
+
+print("All tests passed.")
