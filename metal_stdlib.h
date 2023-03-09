@@ -396,6 +396,48 @@ DECLARE_B_REDUCTION_CLUSTERED(xor)
 
 DECLARE_SHUFFLE_CLUSTERED(shuffle_rotate_down, rotate)
 
+#define EXPOSE_BALLOT(FUNC_EXPR, IN_EXPR, OUT_EXPR, AIR_EXPR) \
+__attribute__((__overloadable__)) OUT_EXPR FUNC_EXPR(IN_EXPR) \
+  __asm("air." #FUNC_EXPR #AIR_EXPR); \
+
+EXPOSE_BALLOT(simd_is_first, , bool, )
+EXPOSE_BALLOT(simd_all, bool expr, bool, )
+EXPOSE_BALLOT(simd_any, bool expr, bool, )
+EXPOSE_BALLOT(simd_ballot, bool expr, ulong, .i64)
+EXPOSE_BALLOT(simd_active_threads_mask, , ulong, .i64)
+
+EXPOSE_BALLOT(quad_is_first, , bool, )
+EXPOSE_BALLOT(quad_all, bool expr, bool, )
+EXPOSE_BALLOT(quad_any, bool expr, bool, )
+EXPOSE_BALLOT(quad_ballot, bool expr, ushort, )
+EXPOSE_BALLOT(quad_active_threads_mask, , ushort, )
+
+int sub_group_elect() {
+  return select(0, 1, simd_is_first());
+}
+
+int sub_group_all(int predicate) {
+  return select(0, 1, simd_all(predicate != 0));
+}
+
+int sub_group_any(int predicate) {
+  return select(0, 1, simd_any(predicate != 0));
+}
+
+int sub_group_non_uniform_all(int predicate) {
+  return select(0, 1, simd_all(predicate != 0));
+}
+
+int sub_group_non_uniform_any(int predicate) {
+  return select(0, 1, simd_any(predicate != 0));
+}
+
+uint4 sub_group_ballot(int predicate) {
+  uint4 output = uint4(0);
+  output.x = simd_ballot(predicate != 0);
+  return output;
+}
+
 #undef EXPOSE_FUNCTION_OVERLOAD_ARGS_1
 #undef EXPOSE_FUNCTION_OVERLOAD_ARGS_2
 #undef BRIDGE_FUNCTION_OVERLOAD_ARGS_1
