@@ -37,7 +37,7 @@ OpenCL (from extension specification):
 - cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions)
 - cl_khr_subgroup_extended_types - must be explicitly enabled, lacks 64-bit types
 - cl_khr_subgroup_non_uniform_vote
-- cl_khr_subgroup_ballot
+- cl_khr_subgroup_ballot - only a small subset of these functions (TODO: document which)
 - cl_khr_subgroup_non_uniform_arithmetic - without prefix form of bitwise/min/max reductions
 - cl_khr_subgroup_shuffle
 - cl_khr_subgroup_shuffle_relative
