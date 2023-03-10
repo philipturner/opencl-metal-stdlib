@@ -31,7 +31,7 @@ This repository is a solution to the problem. In Apple's M1 OpenCL driver, the `
 
 ## Features
 
-The biggest motivating factor behind this header-only library was inaccessibility of SIMD-scoped operations. However, this library can expose other Metal functionality in the future.
+The biggest motivating factor behind this header-only library was inaccessibility of SIMD-scoped operations. However, this library has exposed other Metal functionality, such as `ctz`.
 
 OpenCL (from extension specification):
 - cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions), without the overload of `sub_group_barrier` that takes a memory scope argument
