@@ -34,7 +34,7 @@ This repository is a solution to the problem. In Apple's M1 OpenCL driver, the `
 The biggest motivating factor behind this header-only library was inaccessibility of SIMD-scoped operations. However, this library can expose other Metal functionality in the future.
 
 OpenCL (from extension specification):
-- cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions)
+- cl_khr_subgroups - without the [work-item functions](https://registry.khronos.org/OpenCL/specs/3.0-unified/html/OpenCL_Ext.html#cl_khr_subgroups-additions-to-section-6.13.1-work-item-functions), without the overload of `sub_group_barrier` that takes a memory scope argument
 - cl_khr_subgroup_extended_types<sup>1</sup> - without 64-bit types
 - cl_khr_subgroup_non_uniform_vote - without `sub_group_non_uniform_all_equal`
 - cl_khr_subgroup_ballot - only `sub_group_non_uniform_broadcast`, `sub_group_broadcast_first`, and `sub_group_ballot`

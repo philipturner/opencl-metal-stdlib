@@ -977,11 +977,42 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
     group.encode(queue: queue)
     allGroups.append(group)
   }
-  do {
-    // Vector addition test.
+  
+  // Test that barriers compile. This does not validate that the barrier
+  // actually prevents data races, or that flags are translated correctly from
+  // OpenCL to Metal.
+  if deviceIndex <= 2 {
+    var barriers: String
+    if deviceIndex == 0 || deviceIndex == 1 {
+      barriers = """
+        #if __METAL__
+        simdgroup_barrier(mem_flags::mem_none);
+        simdgroup_barrier(mem_flags::mem_device);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_barrier(mem_flags::mem_texture);
+        simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+        #else
+        simdgroup_barrier(__METAL_MEMORY_FLAGS_NONE__);
+        simdgroup_barrier(__METAL_MEMORY_FLAGS_DEVICE__);
+        simdgroup_barrier(__METAL_MEMORY_FLAGS_THREADGROUP__);
+        simdgroup_barrier(__METAL_MEMORY_FLAGS_TEXTURE__);
+        simdgroup_barrier(
+          __METAL_MEMORY_FLAGS_DEVICE__ | __METAL_MEMORY_FLAGS_THREADGROUP__);
+        #endif
+        """
+    } else {
+      barriers = """
+        sub_group_barrier(0);
+        sub_group_barrier(CLK_GLOBAL_MEM_FENCE);
+        sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+        sub_group_barrier(CLK_IMAGE_MEM_FENCE);
+        sub_group_barrier(CLK_GLOBAL_MEM_FENCE | CLK_LOCAL_MEM_FENCE);
+        """
+    }
     appendGroup(KernelInvocationGroup(
       device: device,
       body: """
+        \(barriers)
         c[tid] = a[tid] + b[tid];
         """,
       sequenceSize: 32,
