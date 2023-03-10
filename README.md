@@ -42,6 +42,7 @@ OpenCL (from extension specification):
 - cl_khr_subgroup_shuffle
 - cl_khr_subgroup_shuffle_relative
 - cl_khr_subgroup_clustered_reduce - with compile-time failure for clusters of 1, 2, 8, or 16
+- `ctz` from OpenCL 2.0
 
 Metal (from feature set tables):
 - Quad-scoped permute operations

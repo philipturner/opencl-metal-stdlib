@@ -229,7 +229,10 @@ func generateSource(
         ushort lane_id = ushort(get_local_id(0)) % 32;
         #pragma clang diagnostic pop
       #endif
+        // For the vector addition kernel which won't cooperate otherwise.
+        #define TYPE(x) \(type)(x)
         \(body)
+        #undef TYPE
       }
       
       """)
@@ -339,7 +342,7 @@ class MetalDevice: GPUDevice {
   required init() {
     self.device = MTLCopyAllDevices().first!
   }
-  
+        
   func createLibrary(source: String) -> MetalLibrary {
     let library = try! device.makeLibrary(source: source, options: nil)
     return MetalLibrary(library: library)
@@ -1013,13 +1016,14 @@ DispatchQueue.concurrentPerform(iterations: 5) { deviceIndex in
       device: device,
       body: """
         \(barriers)
-        c[tid] = a[tid] + b[tid];
+        c[tid] = a[tid] + b[tid] + min(TYPE(8), ctz(a[tid]));
         """,
       sequenceSize: 32,
+      omitFloat: true,
       generate: { index, A, B, C in
         A = index
         B = 2 * index
-        C = A + B
+        C = A + B + min(8, Int32(A).trailingZeroBitCount)
       }
     ))
   }
