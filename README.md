@@ -97,7 +97,7 @@ __kernel void vector_add(__global const int *A, __global const int *B, __global 
 To test the header, you can run the test script either from the command line or from Xcode. To run from the command-line, first download `Tests.swift` from this repository. Either place `metal_stdlib.h` in the same directory as the script, or specify an alternative parent folder (see usage below). Right-click the folder containing the script in Finder. Click <b>New Terminal at Folder</b> and enter the following command.
 
 ```bash
-swift Tests.swift --headers-directory . --use-subgroup-extended-types
+swift Tests.swift --header-directory . --use-subgroup-extended-types
 # Usage: swift Tests.swift \
 #   [--header-directory <path>] \
 #   [--use-subgroup-extended-types]
