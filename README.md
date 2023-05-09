@@ -18,7 +18,7 @@ This repository is a solution to the problem. In Apple's M1 OpenCL driver, the `
 
 ### What you need to watch out for
 
-- OpenCL does not run on iOS. But SYCL will.
+- OpenCL does not run on iOS.
 - The OpenCL Metal Stdlib header may take several seconds to compile, the first time. This could cause a major bottleneck if multiple independent shader programs import it. To work around this, fuse several kernels into a single OpenCL program.
 - Do not use this header on x86 macOS OpenCL backends. Use a conditional compilation macro to only do SIMD reductions on M1. Other vendors have better communication between SIMDs in a threadgroup, so this isn't as much of a concern as with M1.
 - OpenCL provides no direct way to query a thread's lane ID within a subgroup. This is a quirk of how the AIR workaround is implemented. Therefore, the subgroup functions aren't fully OpenCL 2.0 compliant. To work around this, always make threadgroup sizes a multiple of 32, then take `get_local_id(0) % 32`.
